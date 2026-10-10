@@ -16,6 +16,7 @@ var _pinch_d := 0.0
 var _focus := Vector3(0, 1.0, 0)
 var _focus_target := Vector3(0, 1.0, 0)
 var _focus_dist := -1.0
+var min_dist := 10.0
 var _rest_dist := 27.0  # the zoom the user last chose; the view returns to it after a celebration
 
 
@@ -45,13 +46,15 @@ func set_focus(point: Vector3, want_dist: float = -1.0) -> void:
 
 
 func clear_focus() -> void:
+	if min_dist < 10.0:
+		return   # the lineup holds its shot
 	_focus_target = Vector3(0, 1.0, 0)
 	_focus_dist = _rest_dist if absf(dist - _rest_dist) > 0.5 else -1.0
 
 
 func _apply() -> void:
 	pitch = clampf(pitch, 0.15, 1.45)
-	dist = clampf(dist, 10.0, 70.0)
+	dist = clampf(dist, min_dist, 70.0)
 	var p := Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * dist
 	_cam.position = _focus + p
 	_cam.look_at(_focus, Vector3.UP)

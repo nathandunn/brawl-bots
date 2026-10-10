@@ -89,7 +89,7 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 	var last: Dictionary = results[-1] if results.size() > 0 else {}
 	var docs: Array = last.get("doctrines", ["?", "?"])
 	var pres: Array = last.get("presets", ["?", "?"])
-	var txt := "Batch of %d: Red(%s/%s) %d, Blue(%s/%s) %d, draws %d, avg %ds, first blood avg %ds. " % [
+	var txt := "Batch of %d: Outlaws(%s/%s) %d, Law(%s/%s) %d, draws %d, avg %ds, first blood avg %ds. " % [
 		results.size(), docs[0], pres[0], wins[0], docs[1], pres[1], wins[1], draws, int(dur / n), int(fb / n)]
 	var rs := PackedStringArray()
 	for k in reasons:

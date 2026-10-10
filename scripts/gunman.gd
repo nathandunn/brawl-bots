@@ -203,7 +203,8 @@ func _build_body() -> void:
 	mat_shirt = _m(team_color)
 	mat_pants = _m(Color(0.22, 0.2, 0.25))
 	mat_skin = _m(Color(0.86, 0.66, 0.5))
-	mat_hat = _m(team_color.darkened(0.55) if team == 0 else Color(0.18, 0.14, 0.12))
+	# outlaws in black hats, lawmen in pale ones
+	mat_hat = _m(Color(0.1, 0.09, 0.09) if team == 0 else Color(0.72, 0.62, 0.45))
 	var vest := _m(Color(0.25, 0.17, 0.1))
 	body_root = Node3D.new()
 	add_child(body_root)
@@ -216,7 +217,13 @@ func _build_body() -> void:
 	_mesh_box(Vector3(0.52, 0.5, 0.06), Vector3(0, 1.2, -0.15), vest, upper)
 	_mesh_box(Vector3(0.52, 0.08, 0.32), Vector3(0, 0.9, 0), _m(Color(0.15, 0.1, 0.06)), upper)  # gun belt
 	var head := _mesh_box(Vector3(0.28, 0.3, 0.28), Vector3(0, 1.64, 0), mat_skin, upper)
-	_mesh_box(Vector3(0.3, 0.1, 0.06), Vector3(0, -0.1, -0.13), mat_shirt, head)  # bandana
+	var eye_m := _m(Color(0.08, 0.06, 0.05))
+	for ex in [-0.065, 0.065]:
+		_mesh_box(Vector3(0.045, 0.03, 0.01), Vector3(ex, 0.045, -0.142), eye_m, head)
+	if team == 0:
+		_bandana(head)
+	else:
+		_tin_star(upper, Vector3(-0.13, 1.33, -0.19))
 	var brim := MeshInstance3D.new()
 	var bc := CylinderMesh.new()
 	bc.top_radius = 0.34
@@ -262,6 +269,63 @@ func _build_body() -> void:
 	label.position = Vector3(0, 2.35, 0)
 	add_child(label)
 	_update_label()
+
+
+## An outlaw's mask: a kerchief over nose, mouth and chin, knotted behind, its point hanging
+## below the jaw. Only the eyes show between it and the hat brim.
+static var _bandana_mat: StandardMaterial3D
+static var _tin_mat: StandardMaterial3D
+
+
+func _bandana(head: Node3D, k := 1.0) -> void:
+	if _bandana_mat == null:
+		_bandana_mat = StandardMaterial3D.new()
+		_bandana_mat.albedo_color = Color(0.5, 0.06, 0.06)
+		_bandana_mat.roughness = 0.9
+	_mesh_box(Vector3(0.3, 0.16, 0.05) * k, Vector3(0, -0.06, -0.14) * k, _bandana_mat, head)     # over the face
+	_mesh_box(Vector3(0.3, 0.16, 0.05) * k, Vector3(0, -0.06, 0.14) * k, _bandana_mat, head)      # round the back
+	for sx in [-1.0, 1.0]:
+		_mesh_box(Vector3(0.04, 0.16, 0.3) * k, Vector3(sx * 0.145, -0.06, 0) * k, _bandana_mat, head)
+	var tip := _mesh_box(Vector3(0.17, 0.17, 0.03) * k, Vector3(0, -0.16, -0.15) * k, _bandana_mat, head)
+	tip.rotation.z = PI * 0.25                                                             # the point
+	# two white dots of pattern, so it reads as a kerchief and not a beard
+	var dot_m := _m(Color(0.95, 0.9, 0.85))
+	for dx in [-0.07, 0.07]:
+		_mesh_box(Vector3(0.025, 0.025, 0.01) * k, Vector3(dx, -0.04, -0.168) * k, dot_m, head)
+
+
+## A lawman's tin star, pinned over the heart: a five-point star cut from sheet tin.
+func _tin_star(parent: Node3D, at: Vector3) -> MeshInstance3D:
+	if _tin_mat == null:
+		_tin_mat = StandardMaterial3D.new()
+		# polished tin: bright, a little emissive so it catches the lamplight from any angle
+		_tin_mat.albedo_color = Color(0.86, 0.87, 0.9)
+		_tin_mat.metallic = 0.3
+		_tin_mat.roughness = 0.2
+		_tin_mat.emission_enabled = true
+		_tin_mat.emission = Color(0.55, 0.55, 0.58)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var pts: Array[Vector3] = []
+	for k in 10:
+		var a := PI * 0.5 + TAU * k / 10.0
+		var r := 0.075 if k % 2 == 0 else 0.032
+		pts.append(Vector3(cos(a) * r, sin(a) * r, 0))
+	var c := Vector3.ZERO
+	for k in 10:
+		var a: Vector3 = pts[k]
+		var b: Vector3 = pts[(k + 1) % 10]
+		for face in [[c, b, a, -1.0], [c, a, b, 1.0]]:
+			st.set_normal(Vector3(0, 0, face[3]))
+			st.add_vertex(face[0] + Vector3(0, 0, face[3] * 0.004))
+			st.add_vertex(face[1] + Vector3(0, 0, face[3] * 0.004))
+			st.add_vertex(face[2] + Vector3(0, 0, face[3] * 0.004))
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = _tin_mat
+	mi.position = at
+	parent.add_child(mi)
+	return mi
 
 
 func _update_label() -> void:
@@ -1623,6 +1687,10 @@ func _spawn_ragdoll(impulse: Vector3) -> void:
 		hat.material_override = mat_hat
 		hat.position = Vector3(0, 0.2, 0)
 		(ragdoll.bodies["head"] as Node3D).add_child(hat)
+		if team == 0:
+			_bandana(ragdoll.bodies["head"], 1.3)
+		elif ragdoll.bodies.has("torso"):
+			_tin_star(ragdoll.bodies["torso"], Vector3(-0.14, 0.15, -0.18))
 	ragdoll.shove(impulse + Vector3(0, 1.5, 0))
 	body_root.visible = false
 	if label != null:

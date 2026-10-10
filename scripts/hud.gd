@@ -226,7 +226,7 @@ func _build_setup() -> void:
 func _team_panel(t: int) -> Control:
 	var v := VBoxContainer.new()
 	v.custom_minimum_size = Vector2(380, 0)
-	v.add_child(_lbl(MatchManager.TEAM_NAMES[t] + (" (west, swinging doors)" if t == 0 else " (east, back door)"), 18, MatchManager.TEAM_COLORS[t].lightened(0.3)))
+	v.add_child(_lbl(MatchManager.TEAM_NAMES[t] + (" - bandana masks, in by the swinging doors" if t == 0 else " - tin stars, in by the back door"), 18, MatchManager.TEAM_COLORS[t].lightened(0.3)))
 	v.add_child(_lbl("Doctrine", 14, Color(1, 0.85, 0.55)))
 	var dp := OptionButton.new()
 	for d in TeamBrain.DOCTRINES:
@@ -446,7 +446,7 @@ func show_result(res: Dictionary) -> void:
 	setup_overlay.visible = false
 	setup_btn.set_pressed_no_signal(false)
 	var w: int = res["winner"]
-	results_title.text = ("%s wins" % res["winner_name"]) if w >= 0 else "A draw"
+	results_title.text = MatchManager.TEAM_WINS[w] if w >= 0 else "A draw"
 	if w >= 0:
 		results_title.add_theme_color_override("font_color", MatchManager.TEAM_COLORS[w].lightened(0.35))
 	results_box.add_child(_lbl("%s after %d:%02d. Standing %d-%d. First blood at %ds." % [String(res["reason"]).capitalize(), int(res["duration"]) / 60, int(res["duration"]) % 60, res["alive"][0], res["alive"][1], int(maxf(res["first_blood"], 0.0))], 14))
@@ -539,14 +539,14 @@ func show_batch(summary: Dictionary) -> void:
 	var d: Dictionary = summary["data"]
 	results_title.text = "Batch of %d" % d["matches"]
 	results_title.remove_theme_color_override("font_color")
-	results_box.add_child(_lbl("Red (%s / %s) won %d, Blue (%s / %s) won %d, %d drawn. Average match %ds, first blood at %ds." % [d["doctrines"][0], d["presets"][0], d["wins"][0], d["doctrines"][1], d["presets"][1], d["wins"][1], d["draws"], int(d["avg_duration"]), int(d["first_blood"])], 14))
+	results_box.add_child(_lbl("Outlaws (%s / %s) won %d, Law (%s / %s) won %d, %d drawn. Average match %ds, first blood at %ds." % [d["doctrines"][0], d["presets"][0], d["wins"][0], d["doctrines"][1], d["presets"][1], d["wins"][1], d["draws"], int(d["avg_duration"]), int(d["first_blood"])], 14))
 	var rs := PackedStringArray()
 	for k in d["reasons"]:
 		rs.append("%s %d" % [k, d["reasons"][k]])
 	results_box.add_child(_lbl("Endings: " + ", ".join(rs), 13))
 	_next_row()
 	var g := _grid(3)
-	for h in ["", "Red", "Blue"]:
+	for h in ["", "Outlaws", "Law"]:
 		_cell(g, h, Color(1, 0.85, 0.55))
 	var rows := [["Kills", "kills"], ["Shots", "shots"], ["Hits", "hits"], ["Head shots", "heads"], ["Hits on men in cover", "deny"], ["Hits from the balcony", "high"], ["Fist kills", "fist_kills"], ["Tables flipped", "flips"]]
 	for r in rows:

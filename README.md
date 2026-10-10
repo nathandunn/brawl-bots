@@ -1,6 +1,7 @@
 # Saloon Bots
 
-A 5-v-5 six-shooter fight in a two-storey saloon, played out entirely by AI. Part of the
+A 5-v-5 six-shooter fight in a two-storey saloon, played out entirely by AI: **the Law** (tin
+stars, pale hats) against **the Outlaws** (bandana masks, black hats). Part of the
 [Precog sim suite](https://apps.precogsoftwareservices.com).
 
 **Live:** https://saloon-bots.apps.precogsoftwareservices.com
@@ -126,7 +127,7 @@ intents** prints what each man is doing over his head; the ticker shows each tea
 **Batch x10 / x50** runs fast and reports wins, endings, accuracy, hits on men in cover, hits from
 the balcony, fist kills, time in each plan and a by-personality table.
 
-The query string stands in for a command line: `?reddoc=Pincer&bluedoc=Rush&red=Snake&blue=Lawman&seed=3&intents=1`.
+The query string stands in for a command line: `?reddoc=Pincer&bluedoc=Rush&red=Snake&blue=Lawman&seed=3&intents=1` (red = Outlaws, blue = Law). `?lineup=1` stands one of each side in front of the camera; `?cam=10` starts the camera close.
 
 Headless (Godot 4.4+):
 

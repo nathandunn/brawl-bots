@@ -87,6 +87,9 @@ func _ready() -> void:
 	_setup_ui_scale()
 	cam = CameraRig.new()
 	add_child(cam)
+	if args.has("cam"):   # ?cam=10 starts the camera that close
+		cam.dist = float(args["cam"])
+		cam._rest_dist = cam.dist
 	hud = Hud.new()
 	add_child(hud)
 	hud.setup(manager)
@@ -97,6 +100,24 @@ func _ready() -> void:
 	hud.process_mode = Node.PROCESS_MODE_ALWAYS
 	cam.process_mode = Node.PROCESS_MODE_ALWAYS
 	_start_next()
+	if args.has("lineup"):
+		_lineup()
+
+
+## ?lineup=1 - one of each side stood still facing the camera, for looking at the costumes.
+func _lineup() -> void:
+	manager.running = false
+	var picks: Array[Gunman] = [manager.gunmen[0], manager.gunmen[MatchManager.TEAM_SIZE]]
+	for k in 2:
+		var g: Gunman = picks[k]
+		g.global_position = Vector3(-0.45 + 0.9 * k, 0.0, 3.0)
+		g.rotation.y = PI
+	cam.min_dist = 2.0
+	cam.yaw = 0.25
+	cam.pitch = 0.12
+	cam.dist = 3.2
+	cam.set_focus(Vector3(0, 1.3, 3.0), -1.0)
+	cam._focus = cam._focus_target
 
 
 func _setup_ui_scale() -> void:
@@ -217,7 +238,7 @@ func _on_match_ended(res: Dictionary) -> void:
 		hud.set_speed_ui(1.0)
 		return
 	if hud != null:
-		hud.set_status("%s - %s" % ["%s wins" % res["winner_name"] if res["winner"] >= 0 else "Draw", res["reason"]])
+		hud.set_status("%s - %s" % [MatchManager.TEAM_WINS[res["winner"]] if res["winner"] >= 0 else "Draw", res["reason"]])
 		if res["winner"] < 0:
 			get_tree().create_timer(1.5).timeout.connect(func(): _on_celebration_finished(res["match"]))
 

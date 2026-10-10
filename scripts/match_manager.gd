@@ -16,8 +16,10 @@ const TEAM_SIZE := 5
 const MATCH_TIME := 120.0
 const SUDDEN_DEATH_CAP := 45.0
 const STANDOFF := 3.0      # the piano stops; nobody draws until the bottle breaks
-const TEAM_NAMES := ["Red", "Blue"]
-const TEAM_COLORS := [Color(0.85, 0.25, 0.2), Color(0.25, 0.45, 0.9)]
+const TEAM_NAMES := ["Outlaws", "Law"]
+## How each side is spoken of in a sentence.
+const TEAM_WINS := ["The Outlaws win", "The Law wins"]
+const TEAM_COLORS := [Color(0.72, 0.2, 0.16), Color(0.3, 0.42, 0.62)]   # outlaw red, lawman blue-grey
 ## Where a slug lands decides everything. Head or heart: dead. Gut: badly hurt and bleeding.
 ## Arm or leg: not much blood, but he can't shoot, punch or walk right after (see Gunman).
 const DMG := {"head": 999.0, "heart": 999.0, "gut": 38.0, "arm_r": 12.0, "arm_l": 12.0, "leg_l": 12.0, "leg_r": 12.0}
@@ -533,7 +535,7 @@ func _end(winner: int, reason: String) -> void:
 		"first_blood": first_blood,
 		"sudden_death": sudden_death,
 	}
-	announce(winner, "%s wins - %s" % [TEAM_NAMES[winner], reason] if winner >= 0 else "Draw")
+	announce(winner, "%s - %s" % [TEAM_WINS[winner], reason] if winner >= 0 else "Draw")
 	if winner >= 0:
 		for g in gunmen:
 			if g.alive and g.team == winner:
