@@ -27,6 +27,8 @@ const SPAWNS := [Vector2(13.2, 4.0), Vector2(12.9, 6.3), Vector2(10.2, 6.4), Vec
 var world: Node3D
 var saloon: Saloon
 var sfx: Sfx = null
+var blood: Blood = null
+var _corpses: Array = []    # [position, blood left to give]
 var headless := false
 var doctrines: Array[String] = ["Adaptive", "Adaptive"]
 var team_presets: Array[String] = ["Balanced", "Balanced"]
@@ -52,6 +54,7 @@ var _fx: Array = []      # [node, ttl]
 var _tracer_mat: StandardMaterial3D
 var _dust_mat: StandardMaterial3D
 var _glass_mat: StandardMaterial3D
+var _blood_mat: StandardMaterial3D = null
 var first_blood := -1.0
 
 
@@ -97,6 +100,9 @@ func start_match(seed_value: int = -1) -> void:
 	result = {}
 	_celeb_t = -1.0
 	saloon.reset_props()
+	_corpses.clear()
+	if blood != null:
+		blood.clear()
 	brains.clear()
 	for t in 2:
 		var b := TeamBrain.new()
@@ -189,6 +195,13 @@ func set_show_intents(on: bool) -> void:
 func _physics_process(delta: float) -> void:
 	dance_clock += delta
 	_tick_fx(delta)
+	# the dead go on bleeding into the boards for a while
+	for c in _corpses:
+		if c[1] > 0.0:
+			var a := minf(c[1], 2.5 * delta)
+			c[1] -= a
+			if blood != null:
+				blood.pool(c[0], a)
 	if _celeb_t >= 0.0:
 		_celeb_t += delta
 		if _celeb_t > 6.0:
@@ -230,6 +243,8 @@ func _physics_process(delta: float) -> void:
 
 func _on_died(g: Gunman, killer: Gunman, how: String) -> void:
 	last_damage_t = elapsed
+	if how == "gun":
+		_corpses.append([g.global_position, 14.0])
 	if first_blood < 0.0:
 		first_blood = elapsed
 	brains[g.team].member_died(g, killer)
@@ -405,6 +420,29 @@ func _closest_seg_seg(p0: Vector3, p1: Vector3, q0: Vector3, q1: Vector3) -> Vec
 
 
 # ---------------------------------------------------------------- effects
+
+## A puff of red where a slug goes in.
+func spray(at: Vector3, dir: Vector3) -> void:
+	if headless:
+		return
+	if _blood_mat == null:
+		_blood_mat = StandardMaterial3D.new()
+		_blood_mat.albedo_color = Color(0.55, 0.02, 0.02)
+	for i in 7:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3.ONE * rng.randf_range(0.03, 0.06)
+		mi.mesh = bm
+		mi.material_override = _blood_mat
+		mi.position = at
+		world.add_child(mi)
+		var to := at + dir.normalized() * rng.randf_range(0.3, 0.9) + Vector3(rng.randf_range(-0.3, 0.3), rng.randf_range(-0.2, 0.3), rng.randf_range(-0.3, 0.3))
+		var floor_y := 3.25 if at.y > 3.4 else 0.0
+		var tw := mi.create_tween()
+		tw.tween_property(mi, "position", to, 0.12)
+		tw.tween_property(mi, "position", Vector3(to.x, floor_y + 0.01, to.z), 0.25).set_ease(Tween.EASE_IN)
+		_fx.append([mi, 0.6])
+
 
 func _tracer(a: Vector3, b: Vector3) -> void:
 	if headless:

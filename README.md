@@ -35,6 +35,15 @@ you can see between the balusters and a slug gets through about half the time.
   as a settled one. Patience decides how long a man dares to aim; a gun pointed back at him, a man
   close by or his own wounds cut it short. A man set and watching his lane, or coming back up where
   he ducked, starts half-aimed.
+- **Every wound bleeds.** One wound is about a minute from killing a man (arm or leg 1.4 hp/s, gut
+  1.1), two about half that; the label counts it down ("bleeding ~40s"). A man who knows he's
+  bleeding out and has the nerve makes a last stand.
+- **Blood on the boards**: drips, sprays and pools round the bodies fill 0.5 m cells on the floor
+  and balcony; a man who runs through a slick cell may **slip** and go down.
+- **Arm's length**: right in front of a man, he decides — shoot from the hip, or knock the gun
+  aside and hit him (brawlers, and men with a gun on them, go for the fists). A punch into a man
+  with his gun up can **jam** it. Any shot can misfire (1.5%), a scuffling one far more (≈24%); a
+  jammed Colt takes ~1.6 s and two hands to clear, so a careful man hides to do it.
 - A man being punched can't aim; he punches back or backs off. A punch can floor you.
 
 ## How the AI decides

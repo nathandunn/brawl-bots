@@ -27,6 +27,12 @@ const BASE_SIGMA := 0.03    # radians: standing still, aim fully settled
 const AIM_TAU := 0.42       # how fast the aim settles: spread x(1 + 2.2 e^(-t/tau))
 const AIM_BUCKETS := [0.3, 0.7, 1.2]   # stats: snap / quick / steady / careful
 const PUNCH_RANGE := 1.45
+## Every wound bleeds; one is about a minute from killing a man, two about half that.
+const BLEED := {"gut": 1.1, "arm_r": 1.4, "arm_l": 1.4, "leg_l": 1.4, "leg_r": 1.4}
+const MISFIRE := 0.015      # a bad cap, a cylinder out of line
+const JAM_SCUFFLE := 0.22   # ... much likelier with a man hanging on your gun hand
+const JAM_CLEAR := 1.6      # seconds to work it free, two hands
+const PUNCH_JAM := 0.32     # a punch to a man with his gun up can knock the cylinder out of line
 
 var team := 0
 var idx := 0
@@ -49,6 +55,12 @@ var bleed_by: Gunman = null
 var voice_id := 0
 var voice_pitch := 1.0
 var _voice_t := -99.0
+var jammed := false
+var jam_t := 0.0
+var _drip_t := 0.0
+var _last_cell := Vector3i(9999, 0, 0)
+var _close_choice_t := 0.0
+var _close_fists := false     # at arm's length: decided to fight with fists rather than shoot
 var crouched := false
 var knocked_t := 0.0
 var stagger_t := 0.0
@@ -143,7 +155,7 @@ func _ready() -> void:
 	stats = {"name": gm_name, "team": team, "preset": preset_name, "shots": 0, "hits": 0, "heads": 0, "dmg": 0.0, "kills": 0,
 		"punches": 0, "punch_hits": 0, "knockdowns": 0, "fist_kills": 0, "reloads": 0, "flips": 0, "deny_hits": 0,
 		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0,
-		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": ""}
+		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": "", "jams": 0, "slips": 0, "gun_knocks": 0, "bled": 0.0}
 	for i in 12:
 		stats["aimr"].append([0, 0])
 	_last_pos = global_position
@@ -270,6 +282,8 @@ func _update_label() -> void:
 		wl.append("left arm shot")
 	if wounds["gut"] > 0:
 		wl.append("gut-shot")
+	if bleed > 0.0:
+		wl.append("bleeding ~%ds" % int(hp / bleed))
 	if wl.size() > 0 and alive:
 		txt += "\n" + ", ".join(wl)
 	if alive and not celebrating:
@@ -280,6 +294,8 @@ func _update_label() -> void:
 			txt += "\n" + st.to_upper()
 	if reloading:
 		txt += " (rel)"
+	if jammed:
+		txt += " JAMMED"
 	label.text = txt
 
 
@@ -418,9 +434,19 @@ func _physics_process(delta: float) -> void:
 	cower_cd -= delta
 	if bleed > 0.0:
 		hp -= bleed * delta
+		stats["bled"] += bleed * delta
+		_drip_t -= delta
+		if _drip_t <= 0.0:
+			_drip_t = 0.25
+			if manager.blood != null:
+				manager.blood.pour(global_position + Vector3(rng.randf_range(-0.15, 0.15), 0, rng.randf_range(-0.15, 0.15)), bleed * 0.25 * 0.8)
+			if int(manager.elapsed * 4.0) % 8 == 0:
+				_update_label()
 		if hp <= 0.0:
 			hp = 0.0
 			stats["death_part"] = "bled out"
+			brain.log_event("%s has bled out" % gm_name, true)
+			say("die")
 			_die(bleed_by, "gun", forward())
 			return
 	var ss := shown_stance()
@@ -536,6 +562,19 @@ func _decide() -> void:
 			focus = tgt
 			_enter("rush", "charging", 2.0)
 			_charge(tgt)
+			return
+	# --- gun jammed: a careful man gets out of sight while he works it free
+	if jammed and brain.threat_count() > 0 and p("caution") > 0.4 and stance != "hide":
+		_enter("hide", "clearing a jam", jam_t)
+		_go_hide()
+		return
+	# --- bleeding out and knows it: a man with nerve makes it count
+	if bleed > 0.0 and hp / bleed < 15.0 and p("nerve") + p("aggression") > 1.0 and legs_hit() == 0 and total_ammo() > 0:
+		var lt := brain.best_contact_for(self, false)
+		if lt != null:
+			focus = lt
+			_enter("rush", "last stand", 3.0)
+			_charge(lt)
 			return
 	# --- hurt and losing nerve
 	if hp < 45.0 and p("nerve") < 0.5 and rng.randf() < 0.8:
@@ -967,6 +1006,7 @@ func _move(delta: float) -> void:
 			if goal_id >= 0:
 				_go_to(goal_id, goal_score)
 	_last_pos = global_position
+	_check_slip()
 	if Vector2(velocity.x, velocity.z).length() < 0.4:
 		still_t += delta
 	else:
@@ -994,6 +1034,27 @@ func _move(delta: float) -> void:
 		face_toward(global_position + want, delta, 8.0)
 	elif brain.threat_count() > 0:
 		face_toward(brain.threat_centroid(), delta, 4.0)
+
+
+## Running through a pool of blood: each slick cell he steps into at speed is a chance to go
+## down. A careful man creeping, or a man standing, keeps his feet.
+func _check_slip() -> void:
+	if manager.blood == null:
+		return
+	var c: Vector3i = manager.blood.cell_of(global_position)
+	if c == _last_cell:
+		return
+	_last_cell = c
+	var spd := Vector2(velocity.x, velocity.z).length()
+	if spd < 2.2 or not manager.blood.is_slick(global_position):
+		return
+	var v: float = manager.blood.volume_at(global_position)
+	var chance := 0.16 * (spd / 3.9) * clampf(v / Blood.SLICK, 1.0, 2.0) * (1.6 if legs_hit() > 0 else 1.0)
+	if rng.randf() < chance:
+		stats["slips"] += 1
+		brain.log_event("%s slips in the blood!" % gm_name, true)
+		manager.sound("thud", global_position + Vector3(0, 0.3, 0), 0.7)
+		knock_down(1.1)
 
 
 func _arrived() -> void:
@@ -1038,7 +1099,14 @@ func _fight(delta: float) -> void:
 			_punch_land()
 		return
 	if near != null:
-		var want_fists := (grappled or cylinder == 0 or p("brawl") > 0.55 or stagger_t > 0.0) and can_punch()
+		# right in front of him: shoot from the hip, or knock his gun aside and hit him? Decided
+		# afresh every so often - brawlers, and men whose own gun is on them, go for the fists
+		_close_choice_t -= delta
+		if _close_choice_t <= 0.0:
+			_close_choice_t = 0.7
+			var their_gun_on_me := near.aim_target == self and not near.jammed and near.total_ammo() > 0
+			_close_fists = rng.randf() < 0.15 + 0.6 * p("brawl") + (0.2 if their_gun_on_me else 0.0) - 0.15 * p("trigger")
+		var want_fists := (grappled or cylinder == 0 or jammed or _close_fists or stagger_t > 0.0) and can_punch()
 		if want_fists:
 			aim_target = null
 			if punch_cd <= 0.0 and facing(near.global_position, 0.3):
@@ -1048,6 +1116,15 @@ func _fight(delta: float) -> void:
 				stats["punches"] += 1
 				manager.sound("swing", global_position + Vector3(0, 1.4, 0), 1.0, -6.0)
 			return
+	# --- a jammed gun: work it free
+	if jammed:
+		aim_target = null
+		jam_t -= delta
+		if jam_t <= 0.0:
+			jammed = false
+			manager.sound("load", global_position + Vector3(0, 1.0, 0), 0.8)
+			_update_label()
+		return
 	# --- reloading
 	if reloading:
 		reload_t -= delta
@@ -1288,6 +1365,12 @@ func _aim_point(e: Gunman) -> Vector3:
 
 func _fire(tgt: Gunman) -> void:
 	crouched = false
+	# the hammer falls - and sometimes nothing happens. Fighting with a man at arm's length,
+	# hanging on your wrist, it happens a good deal more.
+	var scuffle := (grappled_by != null and is_instance_valid(grappled_by) and manager.elapsed - grappled_t < 1.2) or flat_dist(tgt.global_position) < PUNCH_RANGE
+	if rng.randf() < MISFIRE + (JAM_SCUFFLE if scuffle else 0.0):
+		_jam("misfire" if not scuffle else "jammed in the scuffle")
+		return
 	var sigma := BASE_SIGMA
 	if is_moving():
 		sigma *= {"sprint": 2.8, "run": 2.0, "sneak": 1.5}.get(move_mode, 2.0)
@@ -1352,6 +1435,17 @@ func _flash() -> void:
 		_flash_t = 0.06
 
 
+func _jam(why: String) -> void:
+	jammed = true
+	jam_t = JAM_CLEAR * reload_penalty() * rng.randf_range(0.8, 1.3)
+	aim_target = null
+	aim_t = 0.0
+	stats["jams"] += 1
+	manager.sound("click", global_position + Vector3(0, 1.2, 0), 0.8, 2.0)
+	brain.log_event("%s's gun %s" % [gm_name, "jams" if why != "knocked" else "is knocked out of line"], false)
+	_update_label()
+
+
 func _punch_land() -> void:
 	var e := punch_target
 	punch_target = null
@@ -1368,6 +1462,13 @@ func _punch_land() -> void:
 	e.grappled_by = self
 	e.grappled_t = manager.elapsed
 	e.stagger_t = 0.3
+	# a fist into a man who has his gun up: knock it aside, maybe jam it
+	if (e.aim_target != null or e.peek_hold > 0.0) and not e.jammed and e.total_ammo() > 0:
+		e.aim_target = null
+		e.aim_t = 0.0
+		if rng.randf() < PUNCH_JAM * punch_power():
+			stats["gun_knocks"] += 1
+			e._jam("knocked")
 	var kd := rng.randf() < (0.14 + 0.18 * p("brawl")) * punch_power() + (0.25 if e.legs_hit() > 0 else 0.0)
 	e.take_damage(dmg, "fists", self, "fists", flat(e.global_position - global_position).normalized())
 	if kd and e.alive:
@@ -1392,13 +1493,16 @@ func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vect
 		wounds[part] += 1
 		stats["wounds"].append(part)
 		_wound_visual(part)
-		if part == "gut":
-			bleed += 0.5
-			bleed_by = by
+		bleed += float(BLEED.get(part, 1.2))
+		bleed_by = by
+		if manager.blood != null:
+			manager.blood.pour(global_position + flat(dir) * 0.6, 1.2)   # the spray
 		if part.begins_with("leg") and legs_hit() == 2:
 			brain.log_event("%s is down on the floor - both legs" % gm_name, true)
 	suppression = minf(1.5, suppression + 0.5)
 	_hurt_flash()
+	if how == "gun":
+		manager.spray(global_position + Vector3(0, height() * 0.7, 0), dir)
 	if hp <= 0.0:
 		hp = 0.0
 		stats["death_part"] = part

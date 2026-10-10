@@ -56,6 +56,8 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 			ff[t] += float(m["ff"])
 			for k in m.get("modes", {}):
 				modes[t][k] = float(modes[t].get(k, 0.0)) + float(m["modes"][k])
+			for k in ["jams", "slips", "gun_knocks"]:
+				events[t][k] = int(events[t].get(k, 0)) + int(m.get(k, 0))
 			for k in ["cowers", "flanks", "hides", "rushes"]:
 				events[t][k] += int(m.get(k, 0))
 			if float(m.get("dry_at", -1.0)) >= 0.0:
@@ -111,7 +113,7 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 		var ms := PackedStringArray()
 		for k in modes[t]:
 			ms.append("%s %d%%" % [k, int(round(100.0 * float(modes[t][k]) / maxf(tot, 1.0)))])
-		txt += "%s modes: %s; per match cowers %.1f flanks %.1f hides %.1f rushes %.1f, ran dry %.1f men. " % [MatchManager.TEAM_NAMES[t], ", ".join(ms), events[t]["cowers"] / float(n0(results)), events[t]["flanks"] / float(n0(results)), events[t]["hides"] / float(n0(results)), events[t]["rushes"] / float(n0(results)), events[t]["dry"] / float(n0(results))]
+		txt += "%s modes: %s; per match cowers %.1f flanks %.1f hides %.1f rushes %.1f, ran dry %.1f men, jams %.1f (knocked %.1f), slips %.1f. " % [MatchManager.TEAM_NAMES[t], ", ".join(ms), events[t]["cowers"] / float(n0(results)), events[t]["flanks"] / float(n0(results)), events[t]["hides"] / float(n0(results)), events[t]["rushes"] / float(n0(results)), events[t]["dry"] / float(n0(results)), events[t].get("jams", 0) / float(n0(results)), events[t].get("gun_knocks", 0) / float(n0(results)), events[t].get("slips", 0) / float(n0(results))]
 	var dps := PackedStringArray()
 	for k in deaths:
 		dps.append("%s %d" % [k, deaths[k]])

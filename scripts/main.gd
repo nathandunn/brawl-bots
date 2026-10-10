@@ -33,6 +33,11 @@ func _ready() -> void:
 	var sfx := Sfx.new()
 	add_child(sfx)
 	manager.sfx = sfx
+	var blood := Blood.new()
+	blood.saloon = saloon
+	blood.headless = headless
+	add_child(blood)
+	manager.blood = blood
 	manager.match_ended.connect(_on_match_ended)
 	manager.celebration_finished.connect(_on_celebration_finished)
 	add_child(manager)

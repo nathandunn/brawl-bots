@@ -581,7 +581,7 @@ func show_batch(summary: Dictionary) -> void:
 		results_box.add_child(_lbl("%s: %s" % [MatchManager.TEAM_NAMES[t], _top_modes_all(d.get("modes", [{}, {}])[t])], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
 		var ev: Dictionary = me[t] if me.size() > t else {}
 		var n := maxf(float(d["matches"]), 1.0)
-		results_box.add_child(_lbl("   per match: %.1f cowered, %.1f hid, %.1f flanks, %.1f rushes, %.1f men ran dry" % [float(ev.get("cowers", 0)) / n, float(ev.get("hides", 0)) / n, float(ev.get("flanks", 0)) / n, float(ev.get("rushes", 0)) / n, float(ev.get("dry", 0)) / n], 12))
+		results_box.add_child(_lbl("   per match: %.1f cowered, %.1f hid, %.1f flanks, %.1f rushes, %.1f men ran dry, %.1f jams (%.1f knocked by a punch), %.1f slipped in blood" % [float(ev.get("cowers", 0)) / n, float(ev.get("hides", 0)) / n, float(ev.get("flanks", 0)) / n, float(ev.get("rushes", 0)) / n, float(ev.get("dry", 0)) / n, float(ev.get("jams", 0)) / n, float(ev.get("gun_knocks", 0)) / n, float(ev.get("slips", 0)) / n], 12))
 	var deaths: Dictionary = d.get("deaths", {})
 	if not deaths.is_empty():
 		var dps := PackedStringArray()
