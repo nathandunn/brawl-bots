@@ -18,13 +18,15 @@ const RUN := 3.9
 const SPRINT := 5.0
 const SNEAK := 1.9
 const CYL := 6
-const SPARE := 30
+const SPARE := 12           # 18 rounds in all; after that it's fists
+const TOTAL := CYL + SPARE
 const ROUND_LOAD := 0.42    # one cartridge, thumbed into the gate
 const COCK := 0.62          # hammer back between aimed shots
 const FAN := 0.17           # palm on the hammer
-const BASE_SIGMA := 0.036    # radians, standing still, settled aim
+const BASE_SIGMA := 0.03    # radians: standing still, aim fully settled
+const AIM_TAU := 0.42       # how fast the aim settles: spread x(1 + 2.2 e^(-t/tau))
+const AIM_BUCKETS := [0.3, 0.7, 1.2]   # stats: snap / quick / steady / careful
 const PUNCH_RANGE := 1.45
-const FOV_COS := -0.35      # can see ~140 degrees each side of dead ahead... no: 110 deg half-angle
 
 var team := 0
 var idx := 0
@@ -40,8 +42,13 @@ var team_color := Color.RED
 # condition
 var hp := 100.0
 var alive := true
-var arm_wound := false
-var leg_wound := false
+## Wounds, by part: arm_r (the gun arm), arm_l, leg_l, leg_r, gut. Counted, not just flagged.
+var wounds := {"arm_r": 0, "arm_l": 0, "leg_l": 0, "leg_r": 0, "gut": 0}
+var bleed := 0.0
+var bleed_by: Gunman = null
+var voice_id := 0
+var voice_pitch := 1.0
+var _voice_t := -99.0
 var crouched := false
 var knocked_t := 0.0
 var stagger_t := 0.0
@@ -84,6 +91,14 @@ var still_t := 0.0          # how long he has been set (not moving) - a set man 
 var rested := false
 var last_target: Gunman = null   # who we were on before we ducked
 var last_target_t := -99.0
+## The mode he is in. Each has its own movement, firing and pose:
+##   hold, advance, duck, hide, cower, flank, rush, fall back, brawl, hunt, dry
+var stance := "hold"
+var stance_t := 0.0          # time in this stance
+var stance_lock := 0.0       # can't be talked out of it before this runs down
+var cower_cd := 0.0
+var flank_goal := -1
+var ambush_ready := false    # hiding with an enemy walking into him: comes up already aimed
 var _last_pos := Vector3.ZERO
 var visible_enemies: Array[Gunman] = []
 var celebrating := false
@@ -127,7 +142,10 @@ func _ready() -> void:
 		_build_body()
 	stats = {"name": gm_name, "team": team, "preset": preset_name, "shots": 0, "hits": 0, "heads": 0, "dmg": 0.0, "kills": 0,
 		"punches": 0, "punch_hits": 0, "knockdowns": 0, "fist_kills": 0, "reloads": 0, "flips": 0, "deny_hits": 0,
-		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0}
+		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0,
+		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": ""}
+	for i in 12:
+		stats["aimr"].append([0, 0])
 	_last_pos = global_position
 	decide_t = rng.randf_range(0.05, 0.4)
 
@@ -237,18 +255,84 @@ func _build_body() -> void:
 func _update_label() -> void:
 	if label == null:
 		return
-	var txt := "%s %d" % [gm_name, int(ceil(hp))]
-	if show_intent and alive:
-		txt += "\n" + mode
+	var ammo := "dry" if total_ammo() == 0 else "%d+%d" % [cylinder, spare]
+	var txt := "%s %d  %s" % [gm_name, int(ceil(hp)), ammo]
+	var wl := PackedStringArray()
+	if legs_hit() == 2:
+		wl.append("crawling")
+	elif legs_hit() == 1:
+		wl.append("limping")
+	if arms_hit() == 2:
+		wl.append("arms shot")
+	elif wounds["arm_r"] > 0:
+		wl.append("gun arm shot")
+	elif wounds["arm_l"] > 0:
+		wl.append("left arm shot")
+	if wounds["gut"] > 0:
+		wl.append("gut-shot")
+	if wl.size() > 0 and alive:
+		txt += "\n" + ", ".join(wl)
+	if alive and not celebrating:
+		var st := shown_stance()
+		if show_intent:
+			txt += "\n" + st.to_upper() + ("" if mode == st or mode == "" else " - " + mode)
+		elif st in ["cower", "hide", "flank", "rush", "duck"]:
+			txt += "\n" + st.to_upper()
 	if reloading:
-		txt += " ⟳" if false else " (rel)"
+		txt += " (rel)"
 	label.text = txt
+
+
+func legs_hit() -> int:
+	return int(wounds["leg_l"] > 0) + int(wounds["leg_r"] > 0)
+
+
+func arms_hit() -> int:
+	return int(wounds["arm_r"] > 0) + int(wounds["arm_l"] > 0)
+
+
+## Shot through the gun arm he shifts the Colt to his left hand: wide, and slow to settle.
+## Both arms gone and he can barely hold it up.
+func gun_hand_penalty() -> float:
+	if arms_hit() == 2:
+		return 3.2
+	if wounds["arm_r"] > 0:
+		return 2.0
+	return 1.0
+
+
+## Thumbing cartridges into the gate takes two hands.
+func reload_penalty() -> float:
+	return [1.0, 2.0, 3.0][arms_hit()]
+
+
+## A man can't throw a punch with an arm that has a slug in it; with both he can't punch at all.
+func can_punch() -> bool:
+	return arms_hit() < 2
+
+
+func punch_power() -> float:
+	return 1.0 if arms_hit() == 0 else 0.4
+
+
+func total_ammo() -> int:
+	return cylinder + spare
+
+
+## The stance as you'd describe it from across the room: a man ducking behind his table is
+## ducking, whatever he is in the middle of.
+func shown_stance() -> String:
+	if stance == "cower":
+		return "cower"
+	if duck_t > 0.0:
+		return "duck"
+	return stance
 
 
 # ---------------------------------------------------------------- helpers
 
 func height() -> float:
-	return H_CROUCH if crouched or knocked_t > 0.0 else H_STAND
+	return H_CROUCH if crouched or knocked_t > 0.0 or legs_hit() == 2 else H_STAND
 
 
 func eye() -> Vector3:
@@ -329,6 +413,18 @@ func _physics_process(delta: float) -> void:
 	duck_t -= delta
 	peek_hold -= delta
 	stagger_t -= delta
+	stance_t += delta
+	stance_lock -= delta
+	cower_cd -= delta
+	if bleed > 0.0:
+		hp -= bleed * delta
+		if hp <= 0.0:
+			hp = 0.0
+			stats["death_part"] = "bled out"
+			_die(bleed_by, "gun", forward())
+			return
+	var ss := shown_stance()
+	stats["modes"][ss] = float(stats["modes"].get(ss, 0.0)) + delta
 	if knocked_t > 0.0:
 		knocked_t -= delta
 		velocity.x = 0
@@ -347,6 +443,7 @@ func _physics_process(delta: float) -> void:
 	if decide_t <= 0.0:
 		decide_t = 0.45 + rng.randf() * 0.25
 		_decide()
+		_update_label()
 
 	_move(delta)
 	_fight(delta)
@@ -390,61 +487,100 @@ func _decide() -> void:
 	var o := order()
 	var near := _nearest_enemy_alive(PUNCH_RANGE + 0.3)
 	var contacts := brain.contacts
-	_update_label()
-	# --- a man in your face: fists, or back off if you can still shoot him
+	# --- a man in your face: fists, or back off if you can still shoot him. Even a cowering
+	# man fights when he's grabbed - fight or flight.
 	if near != null:
 		focus = near
-		if p("caution") > 0.75 and hp < 45.0 and p("brawl") < 0.4:
-			_set_mode("backing off")
+		if p("caution") > 0.75 and hp < 45.0 and p("brawl") < 0.4 and total_ammo() > 0:
+			_enter("fall back", "backing off", 0.8)
 			_go_fallback()
 		else:
-			_set_mode("brawling")
+			_enter("brawl", "fists up", 0.0)
 			_stop()
 		return
-	# --- out of bullets: fists or hide
-	if cylinder == 0 and spare == 0 and not reloading:
+	# --- modes that hold a man until they run their course
+	if stance_lock > 0.0 and _continue_stance(o):
+		return
+	# --- the gun is empty for good: 18 rounds and that's your lot
+	if total_ammo() == 0 and not reloading:
+		if stats["dry_at"] < 0.0:
+			stats["dry_at"] = manager.elapsed
+			brain.log_event("%s is out of cartridges" % gm_name, false)
+			say("out")
 		var c := brain.best_contact_for(self, true)
-		if c != null and p("caution") < 0.7:
+		if c != null and legs_hit() == 0 and can_punch() and (p("brawl") + p("aggression")) * 0.5 + 0.2 * p("nerve") > 0.42:
 			focus = c
-			_set_mode("fists up")
-			move_mode = "sprint"
-			_go_to(saloon.nearest_node(brain.contact_pos(c)), 99.0)
+			_enter("rush", "fists only", 4.0)
+			_charge(c)
 		else:
-			_set_mode("hiding (dry)")
-			_go_fallback()
+			_enter("hide", "out of rounds", 4.0)
+			_go_hide()
 		return
 	# --- orders to punish a man the team has counted empty
-	if String(o.get("role", "")) == "punish" and o.get("focus") != null and is_instance_valid(o["focus"]) and (o["focus"] as Gunman).alive:
+	if legs_hit() == 0 and String(o.get("role", "")) == "punish" and o.get("focus") != null and is_instance_valid(o["focus"]) and (o["focus"] as Gunman).alive:
 		focus = o["focus"]
-		_charge(focus, "punishing reload")
+		_enter("rush", "punishing a reload", 3.0)
+		_charge(focus)
 		return
 	# --- own initiative: a counted-out man close by
 	var empty := brain.empty_contact_near(global_position, 12.0)
-	if empty != null and cylinder >= 2 and (p("aggression") + p("brawl")) * 0.5 + rng.randf() * 0.25 > 0.62:
+	if empty != null and legs_hit() == 0 and cylinder >= 2 and (p("aggression") + p("brawl")) * 0.5 + rng.randf() * 0.25 > 0.62:
 		focus = empty
-		_charge(empty, "rushing reload")
+		_enter("rush", "he's empty - go!", 3.0)
+		_charge(empty)
 		return
+	# --- the doctrine says charge
+	if legs_hit() == 0 and String(o.get("role", "")) == "push" and float(o.get("push", 0.0)) >= 0.95 and String(o.get("move", "")) == "sprint" and contacts.size() > 0:
+		var tgt := brain.best_contact_for(self, true)
+		if tgt != null:
+			focus = tgt
+			_enter("rush", "charging", 2.0)
+			_charge(tgt)
+			return
 	# --- hurt and losing nerve
 	if hp < 45.0 and p("nerve") < 0.5 and rng.randf() < 0.8:
-		_set_mode("falling back")
+		_enter("fall back", "hurt", 2.0)
 		_go_fallback()
 		return
-	# --- pinned
+	# --- pinned: the careful man gets out of sight altogether, the rest duck where they are
 	if suppression > 0.75 and p("nerve") < 0.6:
-		_set_mode("pinned")
-		if goal_id < 0 or brain.crouch_exposure(goal_id) > 0.01:
-			_go_fallback()
+		if p("caution") > 0.45 or brain.crouch_exposure(goal_id) > 0.01:
+			_enter("hide", "pinned down", 1.5 + 2.0 * p("caution"))
+			_go_hide()
+		else:
+			duck_t = maxf(duck_t, 0.8)
+		return
+	# --- reloading in the open: get out of their eyes first
+	if reloading and brain.threat_count() > 0 and brain.stand_sight(saloon.nearest_node(global_position)) > 0.0 and p("discipline") + p("caution") > 0.6:
+		_enter("hide", "reloading", 1.5)
+		_go_hide()
 		return
 	# --- nobody known: hunt
 	if contacts.is_empty():
-		_set_mode("hunting")
+		_enter("hunt", "", 0.0)
 		move_mode = "sneak" if p("cunning") > 0.5 or p("caution") > 0.6 else "run"
 		var z: Vector3 = o.get("zone", brain.enemy_home())
 		if o.get("role", "") == "hold" or o.get("role", "") == "guard" or o.get("role", "") == "ambush":
 			_choose_spot(o)
+			stance = "hunt" if stance != "hold" else stance
 		else:
 			_go_to(saloon.nearest_node(z.lerp(brain.enemy_home(), 0.5)), 0.0)
 		return
+	# --- flank: ordered, or a cunning man's own idea when the fight has gone quiet
+	var ordered_flank := String(o.get("role", "")) == "flank"
+	var stalemate := manager.elapsed - brain.last_action_t() > 5.0
+	if (ordered_flank or (stalemate and p("cunning") > 0.45 and rng.randf() < 0.12 + 0.35 * p("cunning"))) and brain.flanker == null and total_ammo() >= 4 and hp > 50.0 and legs_hit() == 0:
+		var fg := _pick_flank_spot()
+		if fg >= 0:
+			brain.flanker = self
+			flank_goal = fg
+			stats["flanks"] += 1
+			_enter("flank", "working round them", 14.0)
+			move_mode = "run"
+			_go_to(fg, 99.0)
+			brain.claim(self, fg)
+			brain.log_event("%s slips off to flank" % gm_name, true)
+			return
 	# --- a table to kick over when there is nothing better nearby
 	if flip_table == null and brain.threat_count() > 0 and level() == 0:
 		var here_prot := 1.0 - brain.crouch_exposure(saloon.nearest_node(global_position))
@@ -453,7 +589,7 @@ func _decide() -> void:
 			if tb != null:
 				flip_table = tb
 				tb.claimed_by = self
-				_set_mode("flipping a table")
+				_enter("advance", "kicking over a table", 1.2)
 				move_mode = "sprint"
 				var threat := brain.threat_centroid()
 				var approach := tb.position - flat(threat - tb.position).normalized() * 0.95
@@ -466,16 +602,112 @@ func _decide() -> void:
 	_choose_spot(o)
 
 
+## Switch modes. `lock` is how long the new mode holds before ordinary decisions resume.
+func _enter(st: String, detail: String, lock: float) -> void:
+	if st != stance:
+		if stance == "flank" and brain.flanker == self:
+			brain.flanker = null
+		stance = st
+		stance_t = 0.0
+		if st == "hide":
+			stats["hides"] += 1
+		elif st == "rush":
+			stats["rushes"] += 1
+		elif st == "cower":
+			stats["cowers"] += 1
+		ambush_ready = false
+	stance_lock = maxf(stance_lock, lock) if st == stance and stance_t > 0.0 else lock
+	mode = detail if detail != "" else st
+	_update_label()
+
+
+## Keep doing the locked mode; false means it has run its course (or broken) and the man
+## should decide afresh.
+func _continue_stance(o: Dictionary) -> bool:
+	match stance:
+		"cower":
+			_stop()
+			return true
+		"hide":
+			# break cover early when an enemy walks into the lane: up and already aimed
+			for e in visible_enemies:
+				if is_instance_valid(e) and e.alive and flat_dist(e.global_position) < 7.0 and total_ammo() > 0 and not reloading:
+					ambush_ready = true
+					stance_lock = 0.0
+					_enter("hold", "ambush!", 0.0)
+					return false
+			if reloading or suppression > 0.35:
+				stance_lock = maxf(stance_lock, 0.4)
+			if goal_id >= 0 and brain.stand_sight(goal_id) > 0.0 and path_i >= path.size():
+				_go_hide()   # they've moved; so does he
+			return true
+		"flank":
+			if flank_goal < 0 or hp < 45.0 or (manager.elapsed - last_hurt_t < 0.3):
+				# spotted and hit on the way round: abort to cover
+				brain.flanker = null if brain.flanker == self else brain.flanker
+				stance_lock = 0.0
+				return false
+			if path_i >= path.size() and flat_dist(saloon.node_pos(flank_goal)) < 0.9:
+				brain.log_event("%s is round their flank" % gm_name, true)
+				brain.flanker = null if brain.flanker == self else brain.flanker
+				still_t = 1.0   # settled the moment he arrives
+				_enter("hold", "on their flank", 4.0 + 4.0 * p("patience"))
+				goal_id = flank_goal
+				flank_goal = -1
+				return true
+			# creep the last stretch
+			move_mode = "sneak" if _near_contacts(8.0) else "run"
+			if path.is_empty():
+				_go_to(flank_goal, 99.0)
+			return true
+		"rush":
+			if focus == null or not is_instance_valid(focus) or not focus.alive:
+				stance_lock = 0.0
+				return false
+			if hp < 35.0 and p("nerve") < 0.6:
+				stance_lock = 0.0
+				return false
+			if path_i >= path.size() or rng.randf() < 0.35:
+				_charge(focus)
+			return true
+		"fall back", "hold", "advance":
+			return true
+	return false
+
+
+func _near_contacts(r: float) -> bool:
+	for e in brain.contacts:
+		if is_instance_valid(e) and e.alive and global_position.distance_to(brain.contacts[e]["pos"]) < r:
+			return true
+	return false
+
+
+## Fight or flight's third option. A shock - a near miss, a wound, a mate dropping beside
+## him - can freeze a man with no nerve: down on his haunches, arms over his head, no gun up.
+## He comes out of it after a second or three, usually to hide.
+func _maybe_cower(intensity: float) -> void:
+	if not alive or stance == "cower" or cower_cd > 0.0 or stance == "brawl" or knocked_t > 0.0:
+		return
+	var chance := intensity * pow(1.0 - p("nerve"), 1.6) * (0.4 + 0.6 * p("caution"))
+	if rng.randf() >= chance:
+		return
+	cower_cd = 7.0 + 6.0 * p("nerve")
+	aim_target = null
+	aim_t = 0.0
+	_stop()
+	_enter("cower", "cowering", lerpf(3.2, 1.2, p("nerve")) + rng.randf() * 0.8)
+	brain.log_event("%s cowers" % gm_name, false)
+
+
 func _set_mode(m: String) -> void:
 	if m != mode:
 		mode = m
 		_update_label()
 
 
-func _charge(target: Gunman, label_txt: String) -> void:
-	_set_mode(label_txt)
+func _charge(target: Gunman) -> void:
 	move_mode = "sprint"
-	var tp := brain.contact_pos(target)
+	var tp := brain.contact_pos(target) if brain.contacts.has(target) else target.global_position
 	_go_to(saloon.nearest_node(tp), 99.0)
 
 
@@ -556,7 +788,9 @@ func _choose_spot(o: Dictionary) -> void:
 	if best < 0:
 		return
 	var label_txt := _role_label(role)
-	_set_mode(label_txt)
+	var bp := saloon.node_pos(best)
+	var going_fwd := flat_dist(bp) > 1.2 and Vector2(bp.x - ec.x, bp.z - ec.z).length() < my_d_enemy - 0.5
+	_enter("advance" if going_fwd else "hold", label_txt, 0.0)
 	move_mode = String(o.get("move", "run"))
 	if best != goal_id or path.is_empty() and flat_dist(saloon.node_pos(best)) > 0.6:
 		_go_to(best, best_s)
@@ -601,6 +835,66 @@ func _go_fallback() -> void:
 	brain.claim(self, best)
 
 
+## Out of every enemy's eye altogether - not just below the top of the cover, but somewhere
+## nobody they know about can see even a standing man. Close by, and away from them.
+func _go_hide() -> void:
+	var ec := brain.threat_centroid()
+	var my_d := flat_dist(ec)
+	var best := -1
+	var best_s := -INF
+	for id in saloon.tac_ids:
+		var np: Vector3 = saloon.nodes[id]["pos"]
+		var d := flat_dist(np) + absf(np.y - global_position.y) * 2.0
+		if d > 11.0:
+			continue
+		var s := -3.0 * brain.stand_sight(id) - 3.0 * brain.crouch_exposure(id) - d / 7.0
+		s += (Vector2(np.x - ec.x, np.z - ec.z).length() - my_d) / 12.0
+		if saloon.nodes[id]["spot"]:
+			s += 0.3
+		s -= brain.crowding(id, self)
+		if s > best_s:
+			best_s = s
+			best = id
+	move_mode = "sprint" if suppression > 0.4 else "run"
+	_go_to(best, best_s)
+	brain.claim(self, best)
+
+
+## Somewhere off to the side of the line between us and them, that is hidden from them
+## crouched but from which a man can hit them even when they crouch - the angle that beats
+## their cover. Reached the long way round, out of sight.
+func _pick_flank_spot() -> int:
+	var ec := brain.threat_centroid()
+	var tc := brain.team_centroid()
+	var axis := flat(ec - tc)
+	if axis.length() < 1.0:
+		return -1
+	axis = axis.normalized()
+	var best := -1
+	var best_s := 0.15
+	for id in saloon.tac_ids:
+		var np: Vector3 = saloon.nodes[id]["pos"]
+		var d := flat_dist(np)
+		if d < 4.0 or d > 20.0:
+			continue
+		var deny := brain.deny_value(id)
+		if deny <= 0.0:
+			continue
+		var rel := flat(np - tc)
+		var lateral := absf(axis.cross(rel).y)            # off to the side of the line
+		var to_e := Vector2(np.x - ec.x, np.z - ec.z).length()
+		if to_e < 4.0 or to_e > 14.0:
+			continue
+		var s := 1.4 * deny - 1.6 * brain.crouch_exposure(id) - 0.6 * brain.stand_sight(id) + 0.09 * lateral - d / 30.0
+		if int(saloon.nodes[id]["level"]) == 1:
+			s += 0.3 * p("height")
+		s -= brain.crowding(id, self)
+		if s > best_s:
+			best_s = s
+			best = id
+	return best
+
+
 func _nearest_enemy_alive(r: float) -> Gunman:
 	var best: Gunman = null
 	var bd := r
@@ -624,8 +918,12 @@ func _move(delta: float) -> void:
 	match move_mode:
 		"sprint": spd = SPRINT
 		"sneak": spd = SNEAK
-	if leg_wound:
-		spd *= 0.7
+	if legs_hit() == 1:
+		spd = minf(spd, RUN) * 0.5    # a limp: no sprinting on that leg
+	elif legs_hit() == 2:
+		spd = 0.8                     # dragging himself along
+	if wounds["gut"] > 0:
+		spd *= 0.85
 	if reloading:
 		spd = minf(spd, RUN * 0.8)
 	if stagger_t > 0.0:
@@ -635,6 +933,8 @@ func _move(delta: float) -> void:
 	if flip_table != null:
 		if not is_instance_valid(flip_table) or flip_table.flipped and flip_table.claimed_by != self:
 			flip_table = null
+	if stance == "cower":
+		path_i = path.size()
 	if near == null and path_i < path.size():
 		var wp := path[path_i]
 		var to := flat(wp - global_position)
@@ -648,7 +948,7 @@ func _move(delta: float) -> void:
 	elif flip_table != null and path_i >= path.size():
 		_do_flip()
 	# a steady man stops to take his shot instead of firing on the run
-	if aim_target != null and move_mode != "sprint" and p("discipline") + 0.3 * p("patience") > 0.4 and want.length() > 0.0:
+	if aim_target != null and move_mode != "sprint" and stance != "rush" and stance != "flank" and stance != "fall back" and p("discipline") + 0.3 * p("patience") > 0.4 and want.length() > 0.0:
 		want = Vector3.ZERO
 	var accel := 14.0
 	velocity.x = move_toward(velocity.x, want.x, accel * delta)
@@ -676,9 +976,17 @@ func _move(delta: float) -> void:
 	var want_crouch: bool = (at_cover and not _peeking()) or move_mode == "sneak" and want.length() > 0.1 or duck_t > 0.0 or (suppression > 0.6 and not _peeking())
 	if reloading and (at_cover or suppression > 0.3):
 		want_crouch = true
+	if stance == "cower":
+		want_crouch = true
+	elif stance == "hide" and want.length() < 0.1:
+		want_crouch = true
+	elif stance == "rush":
+		want_crouch = false
 	crouched = want_crouch
 	# face: the man we're shooting, else where we're going, else the threat
-	if aim_target != null and is_instance_valid(aim_target) and aim_target.alive:
+	if stance == "cower":
+		pass
+	elif aim_target != null and is_instance_valid(aim_target) and aim_target.alive:
 		face_toward(aim_target.global_position, delta, 12.0)
 	elif near != null:
 		face_toward(near.global_position, delta, 12.0)
@@ -711,8 +1019,7 @@ func _do_flip() -> void:
 	path_i = 0
 	goal_id = saloon.nearest_node(spot)
 	move_mode = "run"
-	_set_mode("behind the table")
-	decide_t = 1.5
+	_enter("hold", "behind the table", 1.5)
 
 
 func _peeking() -> bool:
@@ -731,13 +1038,13 @@ func _fight(delta: float) -> void:
 			_punch_land()
 		return
 	if near != null:
-		var want_fists := grappled or cylinder == 0 or p("brawl") > 0.55 or stagger_t > 0.0
+		var want_fists := (grappled or cylinder == 0 or p("brawl") > 0.55 or stagger_t > 0.0) and can_punch()
 		if want_fists:
 			aim_target = null
 			if punch_cd <= 0.0 and facing(near.global_position, 0.3):
 				punch_target = near
 				punch_wind = 0.28
-				punch_cd = 0.7 - 0.15 * p("brawl")
+				punch_cd = (0.7 - 0.15 * p("brawl")) * (1.0 if arms_hit() == 0 else 1.6)
 				stats["punches"] += 1
 				manager.sound("swing", global_position + Vector3(0, 1.4, 0), 1.0, -6.0)
 			return
@@ -753,7 +1060,7 @@ func _fight(delta: float) -> void:
 				reloading = false
 				brain.reload_done(self)
 			else:
-				reload_t = ROUND_LOAD
+				reload_t = ROUND_LOAD * reload_penalty()
 				# break off to shoot a man who has shown himself close
 				if cylinder >= 2 and _best_target() != null and flat_dist(_best_target().global_position) < 8.0 and p("aggression") > 0.4:
 					reloading = false
@@ -787,13 +1094,27 @@ func _fight(delta: float) -> void:
 		return
 	if not manager.can_fire():
 		return
+	# modes that keep the gun down
+	if stance == "cower":
+		aim_target = null
+		aim_t = 0.0
+		return
+	if stance == "hide" and not ambush_ready:
+		aim_target = null
+		aim_t = 0.0
+		return
 	# --- pick a target, aim, fire
 	var tgt := _best_target()
 	if tgt == null:
 		aim_target = null
 		aim_t = 0.0
-		if String(order().get("fire", "")) == "suppress" and cylinder > 2 and spare > 6 and cock_t <= 0.0:
+		# with only 18 rounds, suppressing fire is a luxury for a man with plenty left
+		if String(order().get("fire", "")) == "suppress" and cylinder > 2 and total_ammo() > 10 and cock_t <= 0.0 and stance != "flank":
 			_suppress()
+		return
+	# a flanker keeps his powder dry until he's round - unless he's spotted or right on them
+	if stance == "flank" and tgt.aim_target != self and flat_dist(tgt.global_position) > 6.0:
+		aim_target = null
 		return
 	if tgt != aim_target:
 		var reacquire := tgt == last_target and manager.elapsed - last_target_t < 2.5
@@ -802,20 +1123,55 @@ func _fight(delta: float) -> void:
 		if not reacquire:
 			consec = 0
 		var d := flat_dist(tgt.global_position)
-		fanning = p("trigger") > 0.45 and d < 7.0 + 5.0 * p("trigger") or (p("trigger") > 0.8 and d < 14.0)
-		aim_need = (0.14 if fanning else (0.7 - 0.2 * p("trigger")) * (1.0 + 0.2 * p("patience")))
-		# a man who is set and already watching that way has his hammer back and his eye on the
-		# lane: the defender's edge over a man who has to run into his sights
+		fanning = wounds["arm_r"] == 0 and arms_hit() < 2 and (p("trigger") > 0.45 and d < 7.0 + 5.0 * p("trigger") or (p("trigger") > 0.8 and d < 14.0) or (stance == "rush" and d < 6.0 and p("trigger") > 0.25))
+		# already pointed that way: a set man watching his lane, a man coming back up where he
+		# ducked, or a hider whose victim walked into him, starts with his aim half settled
 		rested = still_t > 0.8 and facing(tgt.global_position, 0.6)
-		if rested:
-			aim_need *= 0.65
-		if reacquire:
-			aim_need *= 0.5   # he ducked knowing exactly where to come back up
+		if rested or reacquire:
+			aim_t = 0.35
+		if ambush_ready:
+			aim_t = 0.55
+			ambush_ready = false
 	if stagger_t > 0.0:
 		return
-	aim_t += delta * (1.0 - 0.4 * minf(suppression, 1.0))
+	aim_need = _want_aim(tgt)
+	var rate := 1.0 - 0.4 * minf(suppression, 1.0)
+	if is_moving():
+		rate *= 0.45   # you can't settle a front sight at a run
+	aim_t += delta * rate
 	if aim_t >= aim_need and cock_t <= 0.0:
 		_fire(tgt)
+
+
+## How long he means to aim before he squeezes. Every extra moment tightens the shot (see
+## aim_spread); the question is how long he dares. Patience buys time; a gun pointed back at
+## him, a man close enough to reach him, or wounds take it away. A man getting low on his
+## 18 rounds takes more care with each.
+func _want_aim(tgt: Gunman) -> float:
+	if fanning:
+		return 0.1
+	var t := clampf(0.22 + 1.05 * p("patience") - 0.25 * p("trigger"), 0.15, 1.4)
+	var d := flat_dist(tgt.global_position)
+	if tgt.aim_target == self and tgt.aim_t > 0.2 and not tgt.reloading:
+		t *= lerpf(0.4, 0.85, p("nerve"))      # he's on me - get it off first
+	if d < 5.0:
+		t *= 0.6
+	if (tgt.reloading or tgt.total_ammo() == 0) and d > 6.0:
+		t *= 1.35                               # he can't shoot back: make it count
+	if hp < 35.0:
+		t *= 0.8
+	if wounds["arm_r"] > 0:
+		t *= 1.3   # off hand: he knows he needs longer
+	if stance == "rush":
+		t *= 0.6
+	t *= 1.0 + 0.5 * (1.0 - float(total_ammo()) / TOTAL) * p("discipline")
+	return t
+
+
+## Spread multiplier for a shot loosed after aiming for `t` seconds: a snap shot is about
+## three times as wide as a settled one; a second of aim gets most of the way there.
+static func aim_spread(t: float) -> float:
+	return 1.0 + 2.2 * exp(-t / AIM_TAU)
 
 
 func _in_cover() -> bool:
@@ -824,7 +1180,7 @@ func _in_cover() -> bool:
 
 func _start_reload() -> void:
 	reloading = true
-	reload_t = ROUND_LOAD + 0.25   # flip the gate, punch the empties
+	reload_t = (ROUND_LOAD + 0.25) * reload_penalty()   # flip the gate, punch the empties
 	aim_target = null
 	stats["reloads"] += 1
 	brain.heard_reload(self)
@@ -841,6 +1197,7 @@ func _best_target() -> Gunman:
 	var best: Gunman = null
 	var best_v := 0.0
 	var thr := 0.1 + 0.14 * p("patience") - 0.08 * p("aggression") + (0.15 if policy == "exposed_only" else 0.0) + (0.1 if moving and p("discipline") > 0.6 else 0.0)
+	thr += 0.15 * (1.0 - float(total_ammo()) / TOTAL) * p("discipline")
 	if policy == "hold_fire":
 		thr = 0.95
 	for e in visible_enemies:
@@ -892,10 +1249,20 @@ func _mate_near_line(to: Vector3) -> bool:
 		var base := m.global_position
 		var r := manager._closest_seg_seg(from, far, base + Vector3(0, 0.3, 0), base + Vector3(0, m.height(), 0))
 		var along: float = r.y * (dist + 6.0)
-		var tol := 0.6 + along * BASE_SIGMA * 2.5
+		var tol := 0.6 + along * _expected_sigma() * 2.5
 		if r.x < tol:
 			return true
 	return false
+
+
+## Roughly how wide his next shot will be - fanning, off-hand, on the move - so the lane check
+## clears enough room for his mates.
+func _expected_sigma() -> float:
+	var s := BASE_SIGMA * gun_hand_penalty()
+	s *= 3.0 if fanning else aim_spread(aim_need)
+	if is_moving():
+		s *= 2.0
+	return s
 
 
 ## How much of a man we could hit if we stood up now: 1 if his chest is clear, 0.45 if only
@@ -927,23 +1294,31 @@ func _fire(tgt: Gunman) -> void:
 	if tgt.is_moving():
 		sigma *= 1.25
 	sigma *= 1.0 + suppression * 1.2
-	if arm_wound:
-		sigma *= 1.4
+	sigma *= gun_hand_penalty()
+	var shot_aim := aim_t
 	if fanning:
-		sigma *= 2.6
+		sigma *= 3.0
+		shot_aim = 0.0
 	else:
-		sigma *= 1.0 - 0.4 * p("patience")   # the patient man's slower squeeze lands
-	sigma *= 1.0 - 0.1 * mini(consec, 3)
-	if rested and not is_moving():
-		sigma *= 0.88
+		sigma *= aim_spread(aim_t / (1.0 if wounds["arm_r"] == 0 else 1.7))
 	var res := manager.fire_bullet(self, _aim_point(tgt), sigma)
 	cylinder -= 1
 	consec += 1
-	cock_t = FAN if fanning else COCK + 0.1 * (1.0 - p("trigger"))
-	aim_t = aim_need * (0.6 if fanning else 0.35)   # follow-up shots come quicker
+	var b := 0
+	while b < AIM_BUCKETS.size() and shot_aim >= float(AIM_BUCKETS[b]):
+		b += 1
+	var dist := flat_dist(tgt.global_position)
+	var rb := 0 if dist < 7.0 else (1 if dist < 14.0 else 2)
+	stats["aimb"][b][0] += 1
+	stats["aimr"][rb * 4 + b][0] += 1
+	stats["aim_sum"] += shot_aim
+	var hit_m = res.get("hit")
+	if hit_m != null and (hit_m as Gunman).team != team:
+		stats["aimb"][b][1] += 1
+		stats["aimr"][rb * 4 + b][1] += 1
+	cock_t = FAN if fanning else COCK + 0.1 * (1.0 - p("trigger")) + (0.25 if wounds["arm_r"] > 0 else 0.0)
+	aim_t = 0.0 if fanning else aim_t * 0.4   # recoil: the sight comes back on, not all the way
 	peek_hold = 0.3 + 1.2 * p("nerve") * (1.0 - p("caution"))
-	if res.get("hit") == tgt:
-		pass
 	_flash()
 	# a careful man ducks after every shot; a gunslinger stands in it
 	if _in_cover() and rng.randf() < 0.25 + 0.6 * p("caution") - 0.3 * p("nerve"):
@@ -963,7 +1338,8 @@ func _suppress() -> void:
 	if flat_dist(tp) > 22.0 or _mate_near_line(tp):
 		return
 	crouched = false
-	manager.fire_bullet(self, tp, BASE_SIGMA * 1.8)
+	manager.fire_bullet(self, tp, BASE_SIGMA * 3.0)
+	stats["aimb"][0][0] += 1
 	cylinder -= 1
 	cock_t = COCK + 0.25
 	peek_hold = 0.4
@@ -987,13 +1363,13 @@ func _punch_land() -> void:
 	if e.facing(global_position, 0.3) and e.rng.randf() < 0.15 + 0.15 * e.p("caution"):
 		return
 	stats["punch_hits"] += 1
-	var dmg := 10.0 + 4.0 * p("brawl")
+	var dmg := (10.0 + 4.0 * p("brawl")) * punch_power()
 	manager.sound("thud", e.global_position + Vector3(0, 1.4, 0))
 	e.grappled_by = self
 	e.grappled_t = manager.elapsed
 	e.stagger_t = 0.3
-	var kd := rng.randf() < 0.14 + 0.18 * p("brawl")
-	e.take_damage(dmg, "fists", self, "torso", flat(e.global_position - global_position).normalized())
+	var kd := rng.randf() < (0.14 + 0.18 * p("brawl")) * punch_power() + (0.25 if e.legs_hit() > 0 else 0.0)
+	e.take_damage(dmg, "fists", self, "fists", flat(e.global_position - global_position).normalized())
 	if kd and e.alive:
 		stats["knockdowns"] += 1
 		e.knock_down(1.3)
@@ -1012,19 +1388,75 @@ func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vect
 			by.stats["ff"] += amount
 		else:
 			by.stats["dmg"] += amount
-	if part == "arm":
-		arm_wound = true
-	elif part == "leg":
-		leg_wound = true
+	if wounds.has(part):
+		wounds[part] += 1
+		stats["wounds"].append(part)
+		_wound_visual(part)
+		if part == "gut":
+			bleed += 0.5
+			bleed_by = by
+		if part.begins_with("leg") and legs_hit() == 2:
+			brain.log_event("%s is down on the floor - both legs" % gm_name, true)
 	suppression = minf(1.5, suppression + 0.5)
 	_hurt_flash()
 	if hp <= 0.0:
 		hp = 0.0
+		stats["death_part"] = part
+		if how == "gun" and part != "head":
+			say("die")
 		_die(by, how, dir)
 	else:
 		decide_t = minf(decide_t, 0.05)
 		brain.member_hit(self, by)
+		if how == "gun":
+			say("leg" if part.begins_with("leg") else ("arm" if part.begins_with("arm") else ("got" if rng.randf() < 0.55 else "hit")))
+			_maybe_cower(0.55 + (0.35 if hp < 40.0 else 0.0))
 	_update_label()
+
+
+## Shout a line, in his own voice. One line at a time per man.
+func say(line: String) -> void:
+	if manager.headless or manager.sfx == null:
+		return
+	if manager.elapsed - _voice_t < 1.2 and line != "die":
+		return
+	_voice_t = manager.elapsed
+	manager.sfx.voice(line, voice_id, global_position + Vector3(0, 1.7, 0), voice_pitch)
+
+
+## A red patch where he was hit, and the limb hangs.
+func _wound_visual(part: String) -> void:
+	if body_root == null:
+		return
+	var red := StandardMaterial3D.new()
+	red.albedo_color = Color(0.55, 0.05, 0.04)
+	var parent: Node3D = null
+	var pos := Vector3.ZERO
+	match part:
+		"arm_r":
+			parent = arm_r
+			pos = Vector3(0, -0.3, 0)
+		"arm_l":
+			parent = arm_l
+			pos = Vector3(0, -0.3, 0)
+		"leg_l":
+			parent = leg_l
+			pos = Vector3(0, -0.4, 0)
+		"leg_r":
+			parent = leg_r
+			pos = Vector3(0, -0.4, 0)
+		"gut":
+			parent = body_root.get_node("upper")
+			pos = Vector3(0, 1.0, -0.16)
+	if parent == null:
+		return
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.2, 0.14, 0.2) if part != "gut" else Vector3(0.18, 0.14, 0.04)
+	mi.mesh = bm
+	mi.material_override = red
+	mi.position = pos
+	parent.add_child(mi)
 
 
 func knock_down(t: float) -> void:
@@ -1037,6 +1469,8 @@ func knock_down(t: float) -> void:
 
 func suppress(amount: float, by: Gunman) -> void:
 	suppression = minf(1.5, suppression + amount * (1.0 - 0.5 * p("nerve")))
+	if suppression > 0.9:
+		_maybe_cower(0.25 * amount / 0.35)
 	if by != null and by.team != team:
 		brain.heard_shot_near(by, self)
 
@@ -1063,6 +1497,8 @@ func _die(by: Gunman, how: String, dir: Vector3) -> void:
 	collision_mask = Saloon.LAYER_WORLD
 	if flip_table != null and flip_table.claimed_by == self:
 		flip_table.claimed_by = null
+	if brain.flanker == self:
+		brain.flanker = null
 	manager.sound("death", global_position + Vector3(0, 1.2, 0))
 	if body_root != null:
 		_spawn_ragdoll(dir * (5.0 if how == "gun" else 3.0))
@@ -1112,23 +1548,68 @@ func _pose(delta: float) -> void:
 	var spd := Vector2(velocity.x, velocity.z).length()
 	_walk_phase += delta * spd * 2.6
 	var swing := sin(_walk_phase) * clampf(spd / 4.0, 0.0, 1.0) * 0.7
-	if crouched:
+	# a limp: the shot leg barely swings and the body dips onto the good one
+	var lw := 0.25 if wounds["leg_l"] > 0 else 1.0
+	var rw := 0.25 if wounds["leg_r"] > 0 else 1.0
+	body_root.position.y = (absf(sin(_walk_phase)) * -0.07 if legs_hit() == 1 and spd > 0.3 else 0.0)
+	body_root.rotation.z = (0.08 * (1.0 if wounds["leg_l"] > 0 else -1.0) if legs_hit() == 1 else 0.0)
+	if legs_hit() == 2:
+		# down on the boards, dragging himself on his elbows
+		leg_l.rotation.x = lerpf(leg_l.rotation.x, -1.45, clampf(delta * 8.0, 0, 1))
+		leg_r.rotation.x = lerpf(leg_r.rotation.x, -1.45, clampf(delta * 8.0, 0, 1))
+		leg_l.position.y = 0.3
+		leg_r.position.y = 0.3
+	elif crouched:
 		leg_l.rotation.x = lerpf(leg_l.rotation.x, -1.2 + swing * 0.3, clampf(delta * 12.0, 0, 1))
 		leg_r.rotation.x = lerpf(leg_r.rotation.x, 0.3 - swing * 0.3, clampf(delta * 12.0, 0, 1))
 		leg_l.position.y = 0.5
 		leg_r.position.y = 0.5
 	else:
-		leg_l.rotation.x = swing
-		leg_r.rotation.x = -swing
+		leg_l.rotation.x = swing * lw
+		leg_r.rotation.x = -swing * rw
 		leg_l.position.y = 0.85
 		leg_r.position.y = 0.85
 	# right arm: raised and pointing when aiming or peeking, else down at the side
+	if stance == "cower":
+		# down on his haunches, both arms wrapped over his hat, shaking
+		arm_r.rotation.x = lerpf(arm_r.rotation.x, 2.7, clampf(delta * 10.0, 0, 1))
+		arm_l.rotation.x = lerpf(arm_l.rotation.x, 2.7, clampf(delta * 10.0, 0, 1))
+		arm_r.rotation.z = lerpf(arm_r.rotation.z, 0.5, clampf(delta * 10.0, 0, 1))
+		arm_l.rotation.z = lerpf(arm_l.rotation.z, -0.5, clampf(delta * 10.0, 0, 1))
+		upper.rotation.x = lerpf(upper.rotation.x, -0.45, clampf(delta * 8.0, 0, 1))
+		upper.position.x = sin(manager.elapsed * 40.0) * 0.015
+		return
+	arm_r.rotation.z = lerpf(arm_r.rotation.z, 0.0, clampf(delta * 10.0, 0, 1))
+	arm_l.rotation.z = lerpf(arm_l.rotation.z, 0.0, clampf(delta * 10.0, 0, 1))
+	upper.rotation.x = lerpf(upper.rotation.x, (-0.3 if stance == "rush" and Vector2(velocity.x, velocity.z).length() > 3.0 else 0.0), clampf(delta * 8.0, 0, 1))
+	upper.position.x = 0.0
+	# the gun hand: the right, unless it's been shot - then the Colt moves to the left
+	var gun_arm := arm_r
+	var off_arm := arm_l
+	if wounds["arm_r"] > 0 and wounds["arm_l"] == 0:
+		gun_arm = arm_l
+		off_arm = arm_r
+		if gun_mi.get_parent() != arm_l:
+			gun_mi.reparent(arm_l, false)
+			flash_mi.reparent(arm_l, false)
 	var aiming := aim_target != null or peek_hold > 0.0
-	var target_rx := 1.57 if aiming else (0.35 if reloading else -swing * 0.6)
-	arm_r.rotation.x = lerpf(arm_r.rotation.x, target_rx, clampf(delta * 14.0, 0, 1))
-	arm_l.rotation.x = lerpf(arm_l.rotation.x, (0.9 if reloading else swing * 0.6), clampf(delta * 10.0, 0, 1))
+	var target_rx := 1.57 if aiming else (0.35 if reloading else (-0.2 if stance == "hide" else -swing * 0.6))
+	if arms_hit() == 2 and aiming:
+		target_rx = 0.9   # can't get it any higher
+	if stance == "brawl" and not aiming:
+		target_rx = 1.2   # fists up
+	gun_arm.rotation.x = lerpf(gun_arm.rotation.x, target_rx, clampf(delta * 14.0, 0, 1))
+	var off_rx := 0.9 if reloading else (1.2 if stance == "brawl" else swing * 0.6)
+	off_arm.rotation.x = lerpf(off_arm.rotation.x, off_rx, clampf(delta * 10.0, 0, 1))
+	# a shot arm that isn't holding the gun just hangs
+	for side in [["arm_l", arm_l], ["arm_r", arm_r]]:
+		if wounds[side[0]] > 0 and side[1] != gun_arm:
+			(side[1] as Node3D).rotation.x = lerpf((side[1] as Node3D).rotation.x, 0.05, clampf(delta * 6.0, 0, 1))
+			(side[1] as Node3D).rotation.z = lerpf((side[1] as Node3D).rotation.z, 0.12 * (1.0 if side[0] == "arm_l" else -1.0), clampf(delta * 6.0, 0, 1))
+	if gun_mi != null:
+		gun_mi.visible = total_ammo() > 0 or reloading
 	if punch_wind >= 0.0:
-		arm_l.rotation.x = 1.6
+		off_arm.rotation.x = 1.6
 
 
 func celebrate() -> void:
@@ -1137,6 +1618,7 @@ func celebrate() -> void:
 	aim_target = null
 	crouched = false
 	velocity = Vector3.ZERO
+	stance = "hold"
 	_set_mode("victory")
 
 

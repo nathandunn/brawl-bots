@@ -458,23 +458,22 @@ func show_result(res: Dictionary) -> void:
 				parts.append("%s %ds" % [k, int(pl[k])])
 		results_box.add_child(_lbl("%s - %s / %s. Plans: %s" % [MatchManager.TEAM_NAMES[t], res["doctrines"][t], res["presets"][t], ", ".join(parts)], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
 	_next_row()
-	var g := _grid(12)
-	for h in ["Man", "Kind", "Kills", "Shots", "Hit", "Acc", "Heads", "Behind cvr", "From balc", "Fists", "Flips", "Fate"]:
+	var g := _grid(11)
+	for h in ["Man", "Kind", "Kills", "Shots", "Acc", "Avg aim", "Vital", "Fists", "Mostly", "Wounds", "Fate"]:
 		_cell(g, h, Color(1, 0.85, 0.55))
 	for m in res["men"]:
 		var col: Color = MatchManager.TEAM_COLORS[int(m["team"])].lightened(0.35)
 		_cell(g, String(m["name"]), col)
 		_cell(g, String(m["preset"]))
 		_cell(g, str(m["kills"]))
-		_cell(g, str(m["shots"]))
-		_cell(g, str(m["hits"]))
+		_cell(g, "%d/18" % int(m["shots"]))
 		_cell(g, _pct(m["hits"], m["shots"]))
+		_cell(g, "%.2fs" % (float(m["aim_sum"]) / maxf(float(m["shots"]), 1.0)))
 		_cell(g, str(m["heads"]))
-		_cell(g, str(m["deny_hits"]))
-		_cell(g, str(m["high_hits"]))
 		_cell(g, "%d/%d" % [m["punch_hits"], m["punches"]])
-		_cell(g, str(m["flips"]))
-		_cell(g, ("alive %d hp" % int(m["hp"])) if m["alive"] else ("shot by %s at %ds" % [m["killed_by"], int(m["died_at"])]))
+		_cell(g, _top_modes(m.get("modes", {})))
+		_cell(g, _wound_text(m.get("wounds", [])))
+		_cell(g, _fate(m))
 	results_box.add_child(_lbl("How it went", 15, Color(1, 0.85, 0.55)))
 	for e in res["events"]:
 		if not e[3]:
@@ -482,6 +481,55 @@ func show_result(res: Dictionary) -> void:
 		var c: Color = MatchManager.TEAM_COLORS[int(e[1])].lightened(0.35)
 		results_box.add_child(_lbl("%d:%02d  %s" % [int(e[0]) / 60, int(e[0]) % 60, e[2]], 12, c))
 	results_overlay.visible = true
+
+
+func _top_modes(md: Dictionary) -> String:
+	var tot := 0.0
+	for k in md:
+		tot += float(md[k])
+	var ks := md.keys()
+	ks.sort_custom(func(a, b): return float(md[a]) > float(md[b]))
+	var parts := PackedStringArray()
+	for i in mini(3, ks.size()):
+		parts.append("%s %d%%" % [ks[i], int(round(100.0 * float(md[ks[i]]) / maxf(tot, 1.0)))])
+	return ", ".join(parts)
+
+
+func _top_modes_all(md: Dictionary) -> String:
+	var tot := 0.0
+	for k in md:
+		tot += float(md[k])
+	var ks := md.keys()
+	ks.sort_custom(func(a, b): return float(md[a]) > float(md[b]))
+	var parts := PackedStringArray()
+	for k in ks:
+		parts.append("%s %d%%" % [k, int(round(100.0 * float(md[k]) / maxf(tot, 1.0)))])
+	return ", ".join(parts)
+
+
+func _wound_text(w: Array) -> String:
+	if w.is_empty():
+		return "-"
+	var parts := PackedStringArray()
+	for x in w:
+		parts.append(String(MatchManager.PART_NAMES.get(x, x)))
+	return ", ".join(parts)
+
+
+func _fate(m: Dictionary) -> String:
+	if m["alive"]:
+		return "standing, %d hp" % int(m["hp"])
+	var dp := String(m.get("death_part", ""))
+	var how := ""
+	match dp:
+		"head": how = "shot through the head"
+		"heart": how = "shot through the heart"
+		"bled out": how = "bled out from a gut shot"
+		"fists": how = "beaten to death"
+		"": how = "killed"
+		_: how = "shot in the %s" % String(MatchManager.PART_NAMES.get(dp, dp))
+	var by := " by %s" % String(m["killed_by"]) if dp != "bled out" else " (%s's bullet)" % String(m["killed_by"])
+	return "%s%s at %ds" % [how, by, int(m["died_at"])]
 
 
 func show_batch(summary: Dictionary) -> void:
@@ -517,6 +565,29 @@ func show_batch(summary: Dictionary) -> void:
 		for k in pl:
 			parts.append("%s %d%%" % [k, int(100.0 * float(pl[k]) / maxf(tot, 1.0))])
 		results_box.add_child(_lbl("%s time in each plan: %s" % [MatchManager.TEAM_NAMES[t], ", ".join(parts)], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
+	results_box.add_child(_lbl("Hit rate by time spent aiming (hits / shots)", 15, Color(1, 0.85, 0.55)))
+	var ag := _grid(5)
+	for hh in ["Range", "Snap <0.3s", "Quick 0.3-0.7s", "Steady 0.7-1.2s", "Careful >1.2s"]:
+		_cell(ag, hh, Color(1, 0.85, 0.55))
+	var ar: Array = d.get("aimr", [])
+	for rb in 3:
+		_cell(ag, ["Close <7 m", "Middle 7-14 m", "Long >14 m"][rb])
+		for b in 4:
+			var c: Array = ar[rb * 4 + b] if ar.size() > rb * 4 + b else [0, 0]
+			_cell(ag, "%s of %d" % [_pct(int(c[1]), int(c[0])), int(c[0])])
+	results_box.add_child(_lbl("Time in each mode", 15, Color(1, 0.85, 0.55)))
+	var me: Array = d.get("mode_events", [{}, {}])
+	for t in 2:
+		results_box.add_child(_lbl("%s: %s" % [MatchManager.TEAM_NAMES[t], _top_modes_all(d.get("modes", [{}, {}])[t])], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
+		var ev: Dictionary = me[t] if me.size() > t else {}
+		var n := maxf(float(d["matches"]), 1.0)
+		results_box.add_child(_lbl("   per match: %.1f cowered, %.1f hid, %.1f flanks, %.1f rushes, %.1f men ran dry" % [float(ev.get("cowers", 0)) / n, float(ev.get("hides", 0)) / n, float(ev.get("flanks", 0)) / n, float(ev.get("rushes", 0)) / n, float(ev.get("dry", 0)) / n], 12))
+	var deaths: Dictionary = d.get("deaths", {})
+	if not deaths.is_empty():
+		var dps := PackedStringArray()
+		for k in deaths:
+			dps.append("%s %d" % [k, deaths[k]])
+		results_box.add_child(_lbl("How men died: " + ", ".join(dps), 13))
 	results_box.add_child(_lbl("By personality", 15, Color(1, 0.85, 0.55)))
 	var pg := _grid(5)
 	for h in ["Kind", "Men", "Kills/man", "Survived", "Acc"]:

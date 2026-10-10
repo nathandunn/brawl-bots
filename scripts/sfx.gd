@@ -9,6 +9,8 @@ extends Node
 const RATE := 22050
 const VOICES := 20          # positional one-shots in flight at once
 const REPEAT_GAP := 0.045   # the same cue twice inside this window is a duplicate, not a sound
+const VOICE_LINES := ["got", "hit", "leg", "arm", "die", "out"]
+const VOICES_N := 3
 
 static var _mute := false
 
@@ -67,6 +69,14 @@ func play(cue: String, at: Vector3, pitch := 1.0, vol_db := 0.0) -> void:
 	p.play()
 
 
+## A man's voice: `line` is one of VOICE_LINES, `who` picks which of the three throats.
+func voice(line: String, who: int, at: Vector3, pitch := 1.0) -> void:
+	var key := "v_%s_%d" % [line, posmod(who, VOICES_N)]
+	if line == "draw":
+		key = "v_draw"
+	play(key, at, pitch, 4.0)
+
+
 # ---------------------------------------------------------------- the recipes
 
 func _build_streams() -> void:
@@ -81,6 +91,16 @@ func _build_streams() -> void:
 	_streams["click"] = _click()
 	_streams["load"] = _load()
 	_streams["wood"] = _wood()
+	_streams["whiz"] = _whiz()
+	# the voices are the one thing not synthesised here: lines spoken by espeak-ng, baked once
+	# into res://sfx/voice (see tools/make_voices.sh) and loaded as ordinary streams
+	for line in VOICE_LINES:
+		for v in VOICES_N:
+			var path := "res://sfx/voice/%s_%d.wav" % [line, v]
+			if ResourceLoader.exists(path):
+				_streams["v_%s_%d" % [line, v]] = load(path)
+	if ResourceLoader.exists("res://sfx/voice/draw.wav"):
+		_streams["v_draw"] = load("res://sfx/voice/draw.wav")
 
 
 static func _wav(s: PackedFloat32Array) -> AudioStreamWAV:
@@ -361,17 +381,37 @@ static func _shot() -> AudioStreamWAV:
 	return _wav(b)
 
 
-## The whine of a slug glancing off iron or a nail head.
+## The whine of a slug glancing off something hard: a crack, then the classic falling
+## "pteeeeoww" with a wobble in it as the deformed lead tumbles away.
 static func _ricochet() -> AudioStreamWAV:
-	var n := int(0.45 * RATE)
-	var b := _buf(0.45)
+	var n := int(0.62 * RATE)
+	var b := _buf(0.62)
 	var ph := 0.0
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
 	for i in n:
 		var t := float(i) / float(n)
-		ph += TAU * lerpf(2600.0, 900.0, t) / float(RATE)
-		b[i] = sin(ph + sin(t * 60.0) * 0.6) * _env(i, n, 0.02, 2.2) * 0.32 + rng.randf_range(-1.0, 1.0) * _env(i, n, 0.001, 30.0) * 0.3
+		var f: float = 3400.0 * pow(0.32, t) + 500.0          # falling whine
+		f *= 1.0 + 0.06 * sin(TAU * 38.0 * t * (1.0 + t))   # the tumble
+		ph += TAU * f / float(RATE)
+		var whine: float = sin(ph) * _env(i, n, 0.015, 1.7) * 0.42
+		var crack: float = rng.randf_range(-1.0, 1.0) * _env(i, n, 0.0008, 40.0) * 0.6
+		b[i] = whine + crack
+	return _wav(b)
+
+
+## A slug going past your ear: a short rising-falling hiss.
+static func _whiz() -> AudioStreamWAV:
+	var n := int(0.16 * RATE)
+	var b := _buf(0.16)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 21
+	for i in n:
+		b[i] = rng.randf_range(-1.0, 1.0)
+	_lowpass(b, 0.35)
+	for i in n:
+		var t := float(i) / float(n)
+		b[i] *= sin(PI * t) * sin(PI * t) * 0.5
 	return _wav(b)
 
 

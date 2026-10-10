@@ -18,7 +18,10 @@ const SUDDEN_DEATH_CAP := 45.0
 const STANDOFF := 3.0      # the piano stops; nobody draws until the bottle breaks
 const TEAM_NAMES := ["Red", "Blue"]
 const TEAM_COLORS := [Color(0.85, 0.25, 0.2), Color(0.25, 0.45, 0.9)]
-const DMG := {"head": 70.0, "torso": 28.0, "arm": 15.0, "leg": 15.0}
+## Where a slug lands decides everything. Head or heart: dead. Gut: badly hurt and bleeding.
+## Arm or leg: not much blood, but he can't shoot, punch or walk right after (see Gunman).
+const DMG := {"head": 999.0, "heart": 999.0, "gut": 38.0, "arm_r": 12.0, "arm_l": 12.0, "leg_l": 12.0, "leg_r": 12.0}
+const PART_NAMES := {"head": "head", "heart": "heart", "gut": "gut", "arm_r": "gun arm", "arm_l": "left arm", "leg_l": "left leg", "leg_r": "right leg"}
 const SPAWNS := [Vector2(13.2, 4.0), Vector2(12.9, 6.3), Vector2(10.2, 6.4), Vector2(9.8, 3.4), Vector2(13.8, 7.6)]
 
 var world: Node3D
@@ -120,6 +123,8 @@ func start_match(seed_value: int = -1) -> void:
 			g.brain = brains[t]
 			g.team_color = TEAM_COLORS[t]
 			g.rng.seed = rng.randi()
+			g.voice_id = (i + t) % 3
+			g.voice_pitch = rng.randf_range(0.9, 1.1)
 			g.show_intent = show_intents
 			var sp: Vector2 = SPAWNS[slots[i]]
 			var s := -1.0 if t == 0 else 1.0
@@ -195,6 +200,8 @@ func _physics_process(delta: float) -> void:
 	elapsed += delta
 	if before < STANDOFF and elapsed >= STANDOFF:
 		announce(-1, "DRAW!")
+		if sfx != null:
+			sfx.voice("draw", 0, Vector3(0, 2.0, 0))
 		sound("smash", Vector3(0, 1.4, 7.6))
 	if sudden_death:
 		sudden_t += delta
@@ -286,16 +293,11 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 	var res := {"hit": victim}
 	if victim != null:
 		stop = from + dir * best_t
-		var rel := (hit_y - victim.global_position.y) / victim.height()
-		var part := "leg"
-		if rel > 0.8:
-			part = "head"
-		elif rel > 0.42:
-			part = "arm" if rng.randf() < 0.2 else "torso"
+		var part := hit_part(victim, stop, hit_y)
 		var dmg: float = DMG[part] * rng.randf_range(0.85, 1.15)
 		if victim.team != shooter.team:
 			shooter.stats["hits"] += 1
-			if part == "head":
+			if part == "head" or part == "heart":
 				shooter.stats["heads"] += 1
 			if victim.crouched:
 				shooter.stats["deny_hits"] += 1
@@ -311,8 +313,8 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 			_glass(stop)
 		elif col is StaticBody3D and (col as Node).get_parent() is Table:
 			sound("wood", stop)
-		elif rng.randf() < 0.3:
-			sound("ricochet", stop, rng.randf_range(0.85, 1.2), -4.0)
+		elif rng.randf() < 0.45:
+			sound("ricochet", stop, rng.randf_range(0.8, 1.25), -2.0)
 		else:
 			sound("wood", stop, 0.8, -6.0)
 		_dust(stop)
@@ -323,12 +325,32 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 		var d := _seg_dist_to_body(from, stop, g)
 		if d < 1.6:
 			g.suppress(0.35 * (1.0 - d / 1.6), shooter)
+			if d < 0.9:
+				sound("whiz", g.global_position + Vector3(0, 1.6, 0), rng.randf_range(0.85, 1.2), -6.0)
 	_tracer(from, stop)
 	return res
 
 
 ## Earliest distance along the ray at which it enters the man's capsule, and the height of
 ## the hit; x < 0 for a miss.
+## Which part of the man a slug at `at` (height `hit_y`) struck. His own right is +x in his
+## frame. The heart is a hand's width either side of the breastbone, upper chest.
+func hit_part(v: Gunman, at: Vector3, hit_y: float) -> String:
+	var rel := (hit_y - v.global_position.y) / v.height()
+	var lx := (at - v.global_position).dot(v.global_transform.basis.x.normalized())
+	if rel > 0.86 and absf(lx) < 0.14:
+		return "head"
+	if rel > 0.86:
+		return "arm_r" if lx > 0.0 else "arm_l"   # a graze off the shoulder
+	if rel > 0.45:
+		if absf(lx) > 0.15:
+			return "arm_r" if lx > 0.0 else "arm_l"
+		if rel > 0.63 and rel < 0.78 and absf(lx) < 0.07:
+			return "heart"
+		return "gut"
+	return "leg_r" if lx > 0.0 else "leg_l"
+
+
 func _ray_capsule(o: Vector3, d: Vector3, max_t: float, g: Gunman) -> Vector2:
 	var r := Gunman.BODY_R
 	var base := g.global_position

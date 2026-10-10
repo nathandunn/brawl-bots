@@ -5,8 +5,8 @@ A 5-v-5 six-shooter fight in a two-storey saloon, played out entirely by AI. Par
 
 **Live:** https://saloon-bots.apps.precogsoftwareservices.com
 
-Every man carries the same Colt (six in the cylinder, thirty spare, one cartridge at a time to
-reload) and the same two fists. Nothing about the men differs but **how they think** — the team's
+Every man carries the same Colt (six in the cylinder, twelve spare - **18 rounds in all**, one
+cartridge at a time to reload) and the same two fists. After the eighteenth, it's fists. Nothing about the men differs but **how they think** — the team's
 **doctrine** and each man's **personality** — so whatever wins, strategy won it.
 
 ## The room
@@ -26,7 +26,15 @@ you can see between the balusters and a slug gets through about half the time.
   next man down loses it for his side. Nobody falls in 45 s: remaining health; dead level: draw.
 - Bullets are real lines: they stop in wood and walls, hit whoever is in the way (friends too —
   the men check their lanes), and rattle anyone they pass close to (suppression).
-- Head 70, torso 28, arm or leg 15 of 100 HP. An arm wound spoils aim, a leg wound slows.
+- **Vital hits kill**: head or heart. A gut shot does 38 of 100 and bleeds. Arms and legs cost
+  little blood, but a man shot in the **gun arm** shifts the Colt to his left hand (spread ×2,
+  slow to settle, no fanning); **either arm** slows his reload and his punches; **both arms** and
+  he can barely lift the gun or punch at all. **One leg**: a limp, no sprinting. **Both legs**: he
+  drags himself along the floor.
+- **Aim time is accuracy**: spread is ×(1 + 2.2·e^(−t/0.42)) — a snap shot is three times as wide
+  as a settled one. Patience decides how long a man dares to aim; a gun pointed back at him, a man
+  close by or his own wounds cut it short. A man set and watching his lane, or coming back up where
+  he ducked, starts half-aimed.
 - A man being punched can't aim; he punches back or backs off. A punch can floor you.
 
 ## How the AI decides
@@ -54,6 +62,15 @@ you can see between the balusters and a slug gets through about half the time.
 | High Ground | Three hold the balcony and shoot down over the cover; two guard the foot of our stair |
 | Leapfrog | Two groups: one bounds cover-to-cover while the other suppresses, then swap |
 | Bait | One man with nerve draws them out and runs back into the other four's ambush |
+
+**Modes.** Every man is always in one, shown over his head: **hold** (in cover, peeking to
+shoot), **advance** (cover to cover), **duck** (down behind cover for a moment — after a shot, or
+when he sees a gun on him), **hide** (out of every enemy's sight altogether — to reload, when
+pinned, when dry; pops up already aimed if an enemy walks into him), **cower** (frozen, arms over
+his hat, no gun up — a shock to a man with no nerve: a wound, a near miss, a mate dropping beside
+him), **flank** (one man at a time slips round out of sight to the angle that beats their cover,
+holding fire till he's there), **rush** (sprint at a man, firing or fanning — to punish a reload,
+on the charge, or with fists once dry), **fall back**, **brawl**, **hunt**.
 
 **Each man** (`scripts/gunman.gd`) scores every tactical point with weights from his ten traits
 (aggression, caution, patience, discipline, cunning, nerve, teamwork, height, brawl, trigger) and
@@ -85,6 +102,13 @@ Rush is the weakest fixed plan (~30%) and Bait next (~35%) — open calibration 
 Personality presets (Adaptive both sides) against Balanced, 10 matches each: Gunslinger 7-3,
 Brawler 7-3, Desperado 6-4, Lawman 4-6, Snake 3-7, Sharpshooter 2-8, Coward 2-8. Aggression
 still pays more than patience — also open debt.
+
+## Sound
+
+Shots, ricochets (a falling "pteeoww"), near-miss whizzes, wood thunks, breaking bottles, the click
+of a hammer on a spent chamber, cartridges thumbed home — all synthesised in `scripts/sfx.gd`. The
+voices — "He got me!", "I'm hit!", "My leg!", "My arm!", a dying "He... got me.", "I'm out!" and the
+"Draw!" — are espeak-ng lines in three voices, baked into `sfx/voice/` by `tools/make_voices.sh`.
 
 ## Running it
 

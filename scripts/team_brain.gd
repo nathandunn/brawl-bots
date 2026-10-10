@@ -38,6 +38,8 @@ var phase_t := 0.0
 var orders := {}               # Gunman -> Dictionary
 var contacts := {}             # Gunman -> {pos, t, seen_t, reloading, reload_end}
 var shots_counted := {}        # Gunman -> shots fired since we last heard him reload
+var total_counted := {}        # Gunman -> every shot we've counted from him (18 and he's dry)
+var flanker: Gunman = null     # one man at a time slips off round the side
 var claims := {}               # Gunman -> node id
 var events: Array = []         # [time, text, important]
 var plan_seconds := {}         # plan -> seconds active (for stats)
@@ -128,6 +130,9 @@ func enemy_fired(e: Gunman) -> void:
 	_heard(e, 1.5)
 	if rng.randf() < 0.45 + 0.55 * _best("discipline"):
 		shots_counted[e] = int(shots_counted.get(e, 0)) + 1
+		total_counted[e] = int(total_counted.get(e, 0)) + 1
+		if int(total_counted[e]) == Gunman.TOTAL:
+			log_event("%s counted 18 from %s - he's dry" % [manager.TEAM_NAMES[team], e.gm_name], true)
 
 
 func enemy_reloading(e: Gunman) -> void:
@@ -175,9 +180,15 @@ func contact_pos(e: Gunman) -> Vector3:
 	return e.global_position
 
 
+func is_dry_est(e: Gunman) -> bool:
+	return int(total_counted.get(e, 0)) >= Gunman.TOTAL
+
+
 func is_empty_est(e: Gunman) -> bool:
 	if not contacts.has(e):
 		return false
+	if is_dry_est(e):
+		return true
 	var c: Dictionary = contacts[e]
 	if c.get("reloading", false) and now() < float(c.get("reload_end", 0.0)):
 		return true
@@ -239,6 +250,11 @@ func _ground_contacts_centroid() -> Vector3:
 			c += contacts[e]["pos"]
 			n += 1
 	return c / n if n > 0 else threat_centroid()
+
+
+## When anyone in the room last drew blood - the stalemate clock.
+func last_action_t() -> float:
+	return maxf(_last_damage_t, manager.last_damage_t)
 
 
 func team_centroid() -> Vector3:
@@ -705,6 +721,8 @@ func _assign_punish(own: Array[Gunman]) -> void:
 				continue
 			var c: Dictionary = contacts[e]
 			var window := float(c.get("reload_end", 0.0)) - now() if c.get("reloading", false) else 1.5
+			if is_dry_est(e):
+				window = 99.0
 			if d / Gunman.SPRINT > window + 1.0:
 				continue   # he'll be loaded before we get there
 			var sc := g.p("aggression") + g.p("brawl") + 0.5 * g.p("discipline") - d / 10.0
@@ -712,7 +730,7 @@ func _assign_punish(own: Array[Gunman]) -> void:
 				bs = sc
 				best = g
 		if best != null and rng.randf() < 0.3 + 0.6 * _mean("discipline"):
-			_punish[best] = [e, now() + 3.5]
+			_punish[best] = [e, now() + (8.0 if is_dry_est(e) else 3.5)]
 			log_event("%s counted %s empty - %s goes for him" % [manager.TEAM_NAMES[team], e.gm_name, best.gm_name], true)
 
 
@@ -724,8 +742,11 @@ func member_died(g: Gunman, killer: Gunman) -> void:
 		_avenge = killer
 		_avenge_until = now() + 6.0
 	# a man going down next to you rattles you
+	if flanker == g:
+		flanker = null
 	for m in members:
 		if m.alive and m.global_position.distance_to(g.global_position) < 6.0:
 			m.suppression = minf(1.5, m.suppression + 0.35 * (1.0 - m.p("nerve")))
+			m._maybe_cower(0.7 if m.global_position.distance_to(g.global_position) < 3.0 else 0.4)
 	for k in groups.size():
 		groups[k].erase(g)
