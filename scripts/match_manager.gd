@@ -265,7 +265,7 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 	var up := right.cross(dir).normalized()
 	dir = (dir + right * rng.randfn(0.0, sigma) + up * rng.randfn(0.0, sigma)).normalized()
 	var end := from + dir * 45.0
-	var hit := saloon.ray(from, end)
+	var hit := saloon.bullet_ray(from, end, rng)
 	var stop: Vector3 = hit.get("position", end)
 	var seg_len := from.distance_to(stop)
 	shooter.stats["shots"] += 1

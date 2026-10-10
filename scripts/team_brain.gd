@@ -49,6 +49,8 @@ var _avenge_until := 0.0
 var _last_damage_t := 0.0
 var groups := [[], []]          # leapfrog / pincer split
 var _bait_shots0 := 0
+var _stormer: Gunman = null      # sent up the stairs to clear their men off the balcony
+var _upstairs_t := 0.0
 
 # tactical map
 var _n := 0
@@ -227,6 +229,16 @@ func threat_centroid() -> Vector3:
 	if n == 0:
 		return enemy_home()
 	return c / n
+
+
+func _ground_contacts_centroid() -> Vector3:
+	var c := Vector3.ZERO
+	var n := 0
+	for e in contacts:
+		if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) < 1.0:
+			c += contacts[e]["pos"]
+			n += 1
+	return c / n if n > 0 else threat_centroid()
 
 
 func team_centroid() -> Vector3:
@@ -504,6 +516,7 @@ func _command() -> void:
 	if want != plan:
 		_set_plan(want, why)
 	_assign(own)
+	_assign_storm(own)
 	_assign_punish(own)
 
 
@@ -549,8 +562,10 @@ func _assign(own: Array[Gunman]) -> void:
 					_enter_phase("charge")
 					log_event("%s: CHARGE!" % manager.TEAM_NAMES[team], true)
 			else:
+				# concentration of force: all five onto their floor group, the men upstairs can wait
+				var gc := _ground_contacts_centroid()
 				for g in own:
-					orders[g] = _order("push", ec, 1.0, "free", "sprint")
+					orders[g] = _order("push", gc, 1.0, "free", "sprint")
 		"Pincer":
 			if groups[0].is_empty():
 				var r := _rank(own, func(g): return g.p("height") + g.p("cunning"))
@@ -631,6 +646,40 @@ func _assign(own: Array[Gunman]) -> void:
 		_:
 			for g in own:
 				orders[g] = _order("free", null, 0.0, "free", "run")
+
+
+## Every gang knows a balcony full of guns has to be cleared: when two or more of them have
+## held it for a while and none of us is up there, the boldest climber goes up the nearest
+## stair after them. A team that is digging in leaves them be.
+func _assign_storm(own: Array[Gunman]) -> void:
+	var up := 0
+	for e in contacts:
+		if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) > 2.6:
+			up += 1
+	var ours := 0
+	for g in own:
+		if g.level() == 1:
+			ours += 1
+	if up >= 2 and ours == 0 and plan != "Dig In":
+		_upstairs_t += 0.5
+	else:
+		_upstairs_t = 0.0
+	if _stormer != null and (not is_instance_valid(_stormer) or not _stormer.alive or up == 0):
+		_stormer = null
+	if _stormer == null and _upstairs_t > 6.0 and own.size() >= 2:
+		var r := _rank(own, func(g): return g.p("aggression") + g.p("cunning") + g.p("height") - (2.0 if _punish.has(g) else 0.0))
+		_stormer = r[0]
+		log_event("%s: %s goes up the stairs to clear the balcony" % [manager.TEAM_NAMES[team], _stormer.gm_name], true)
+	if _stormer != null:
+		# up our own stair and along the balcony toward them
+		var ex := 0.0
+		var n := 0
+		for e in contacts:
+			if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) > 2.6:
+				ex += float(contacts[e]["pos"].x)
+				n += 1
+		var tx := ex / maxf(n, 1)
+		orders[_stormer] = _order("high", _balc(tx + side * 3.0), 0.8, "free", "run")
 
 
 ## The payoff for counting: a man the team has counted empty gets rushed by whoever is best

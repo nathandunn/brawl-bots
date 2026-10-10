@@ -15,7 +15,8 @@ Mirror-symmetric about the middle so neither end starts with the better ground: 
 the back wall at 3.25 m with a solid balustrade, a stair up each side wall, a long bar with a
 shelf of bottles (they break), a piano, a stove column, posts, barrels, crates up and down, and a
 dozen round tables. A standing table hides nothing — a crouching man's head is above it — so men
-**kick tables over** into 1.2 m boards facing the threat.
+**kick tables over** into 1.2 m boards facing the threat. The balcony rail is a balustrade:
+you can see between the balusters and a slug gets through about half the time.
 
 ## Rules
 
@@ -62,6 +63,28 @@ fall back when hurt and rattled; flip a table when the nearest cover is no cover
 
 Presets: Balanced, Gunslinger, Sharpshooter, Brawler, Snake, Lawman, Coward, Desperado, Random,
 and Custom (the sliders). A whole team or any single man can be set.
+
+## Balance (headless, Balanced personalities both sides, both ends of the room)
+
+Doctrine league, 10 matches per pairing (±15 points is 1σ per cell):
+
+| | Adaptive | Dig In | Rush | Pincer | High Ground | Leapfrog | Bait |
+|---|---|---|---|---|---|---|---|
+| **Adaptive** | – | 8-2 | 9-1 | 6-4 | 5-5 | 6-4 | 6-4 |
+| **Dig In** | 2-8 | – | 8-2 | 1-9 | 5-5 | 1-9 | 4-6 |
+| **Rush** | 1-9 | 2-8 | – | 5-5 | 1-9 | 4-6 | 5-5 |
+| **Pincer** | 4-6 | 9-1 | 5-5 | – | 5-5 | 6-4 | 6-4 |
+| **High Ground** | 5-5 | 5-5 | 9-1 | 5-5 | – | 8-2 | 8-2 |
+| **Leapfrog** | 4-6 | 9-1 | 6-4 | 4-6 | 2-8 | – | 10-0 |
+| **Bait** | 4-6 | 6-4 | 5-5 | 4-6 | 2-8 | 0-10 | – |
+
+The counters are the point: Dig In beats Rush, Leapfrog and Pincer beat Dig In, High Ground
+beats Leapfrog, Pincer holds High Ground. Adaptive, which reads the fight, tops the table.
+Rush is the weakest fixed plan (~30%) and Bait next (~35%) — open calibration debt.
+
+Personality presets (Adaptive both sides) against Balanced, 10 matches each: Gunslinger 7-3,
+Brawler 7-3, Desperado 6-4, Lawman 4-6, Snake 3-7, Sharpshooter 2-8, Coward 2-8. Aggression
+still pays more than patience — also open debt.
 
 ## Running it
 

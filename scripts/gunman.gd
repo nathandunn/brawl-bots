@@ -82,6 +82,8 @@ var sense_t := 0.0
 var stuck_t := 0.0
 var still_t := 0.0          # how long he has been set (not moving) - a set man has his gun up
 var rested := false
+var last_target: Gunman = null   # who we were on before we ducked
+var last_target_t := -99.0
 var _last_pos := Vector3.ZERO
 var visible_enemies: Array[Gunman] = []
 var celebrating := false
@@ -111,7 +113,7 @@ var stats := {}
 
 func _ready() -> void:
 	collision_layer = Saloon.LAYER_MEN
-	collision_mask = Saloon.LAYER_WORLD | Saloon.LAYER_MEN | Saloon.LAYER_MOVE
+	collision_mask = Saloon.LAYER_WORLD | Saloon.LAYER_MEN | Saloon.LAYER_MOVE | Saloon.LAYER_SOFT
 	floor_max_angle = deg_to_rad(50)
 	floor_snap_length = 0.45
 	var cs := CollisionShape3D.new()
@@ -645,6 +647,9 @@ func _move(delta: float) -> void:
 			want = to.normalized() * spd
 	elif flip_table != null and path_i >= path.size():
 		_do_flip()
+	# a steady man stops to take his shot instead of firing on the run
+	if aim_target != null and move_mode != "sprint" and p("discipline") + 0.3 * p("patience") > 0.4 and want.length() > 0.0:
+		want = Vector3.ZERO
 	var accel := 14.0
 	velocity.x = move_toward(velocity.x, want.x, accel * delta)
 	velocity.z = move_toward(velocity.z, want.z, accel * delta)
@@ -772,6 +777,9 @@ func _fight(delta: float) -> void:
 			if e.aim_target == self and e.aim_t > 0.12 and not e.reloading:
 				if rng.randf() < (0.08 + 0.25 * p("caution") - 0.15 * p("nerve")) and _in_cover():
 					duck_t = 0.5 + 0.5 * p("caution")
+					if aim_target != null:
+						last_target = aim_target
+						last_target_t = manager.elapsed
 					aim_target = null
 					aim_t = 0.0
 					return
@@ -788,17 +796,21 @@ func _fight(delta: float) -> void:
 			_suppress()
 		return
 	if tgt != aim_target:
+		var reacquire := tgt == last_target and manager.elapsed - last_target_t < 2.5
 		aim_target = tgt
 		aim_t = 0.0
-		consec = 0
+		if not reacquire:
+			consec = 0
 		var d := flat_dist(tgt.global_position)
 		fanning = p("trigger") > 0.45 and d < 7.0 + 5.0 * p("trigger") or (p("trigger") > 0.8 and d < 14.0)
-		aim_need = (0.14 if fanning else 0.7 - 0.2 * p("trigger"))
+		aim_need = (0.14 if fanning else (0.7 - 0.2 * p("trigger")) * (1.0 + 0.2 * p("patience")))
 		# a man who is set and already watching that way has his hammer back and his eye on the
 		# lane: the defender's edge over a man who has to run into his sights
 		rested = still_t > 0.8 and facing(tgt.global_position, 0.6)
 		if rested:
-			aim_need *= 0.45
+			aim_need *= 0.65
+		if reacquire:
+			aim_need *= 0.5   # he ducked knowing exactly where to come back up
 	if stagger_t > 0.0:
 		return
 	aim_t += delta * (1.0 - 0.4 * minf(suppression, 1.0))
@@ -828,7 +840,7 @@ func _best_target() -> Gunman:
 	var moving := is_moving()
 	var best: Gunman = null
 	var best_v := 0.0
-	var thr := 0.12 + 0.3 * p("patience") - 0.12 * p("aggression") + (0.15 if policy == "exposed_only" else 0.0) + (0.1 if moving and p("discipline") > 0.6 else 0.0)
+	var thr := 0.1 + 0.14 * p("patience") - 0.08 * p("aggression") + (0.15 if policy == "exposed_only" else 0.0) + (0.1 if moving and p("discipline") > 0.6 else 0.0)
 	if policy == "hold_fire":
 		thr = 0.95
 	for e in visible_enemies:
@@ -919,9 +931,11 @@ func _fire(tgt: Gunman) -> void:
 		sigma *= 1.4
 	if fanning:
 		sigma *= 2.6
+	else:
+		sigma *= 1.0 - 0.4 * p("patience")   # the patient man's slower squeeze lands
 	sigma *= 1.0 - 0.1 * mini(consec, 3)
 	if rested and not is_moving():
-		sigma *= 0.8
+		sigma *= 0.88
 	var res := manager.fire_bullet(self, _aim_point(tgt), sigma)
 	cylinder -= 1
 	consec += 1
@@ -933,6 +947,8 @@ func _fire(tgt: Gunman) -> void:
 	_flash()
 	# a careful man ducks after every shot; a gunslinger stands in it
 	if _in_cover() and rng.randf() < 0.25 + 0.6 * p("caution") - 0.3 * p("nerve"):
+		last_target = aim_target
+		last_target_t = manager.elapsed
 		aim_target = null
 		duck_t = 0.25 + 0.4 * p("caution")
 	_update_label()

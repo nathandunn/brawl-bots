@@ -12,6 +12,8 @@ const LAYER_WORLD := 1        # blocks bullets and men
 const LAYER_MEN := 2
 const LAYER_RAGDOLL := 16
 const LAYER_MOVE := 32        # blocks men only (the footprint of an upright table)
+const LAYER_SOFT := 64        # balusters: men can't walk through, eyes see through, slugs stop half the time
+const SOFT_STOP := 0.5
 
 const HALF_X := 15.0
 const HALF_Z := 10.0
@@ -22,6 +24,7 @@ const STAIR_HW := 0.8
 const STAIR_BOT_Z := 2.0
 const STAIR_TOP_Z := -6.5
 const CLEAR := 0.42           # body radius + a whisker
+const RAIL_H := 0.9
 
 ## obstacles per level: {kind, c: Vector2, half: Vector2 | r: float, h: float, level, cover, name}
 var obstacles: Array[Dictionary] = []
@@ -186,9 +189,27 @@ func _build_shell() -> void:
 	_box(Vector3(HALF_X * 2, 0.25, 3.5), Vector3(0, BALC_Y - 0.125, -HALF_Z + 1.75), "wood")
 	# balcony railing (a solid balustrade - low cover for the men upstairs)
 	var rail_half := HALF_X - STAIR_HW * 2 - 0.05
-	_box(Vector3(rail_half * 2, 1.0, 0.1), Vector3(0, BALC_Y + 0.5, BALC_Z), "dark")
-	_rect_obs(Vector2(0, BALC_Z), Vector2(rail_half, 0.05), 1.0, 1, true, "railing")
-	_deco_box(Vector3(rail_half * 2, 0.08, 0.2), Vector3(0, BALC_Y + 1.02, BALC_Z), "wood")
+	# 0.9 m: a man crouched behind it still shows the crown of his hat to the floor below,
+	# so the balcony is strong but not a fortress
+	# A balustrade, not a wall: you can see between the balusters, and a slug gets through
+	# about half the time - so the balcony is strong ground but not a fortress.
+	var rail := StaticBody3D.new()
+	rail.collision_layer = LAYER_SOFT
+	rail.collision_mask = 0
+	var rcs := CollisionShape3D.new()
+	var rsh := BoxShape3D.new()
+	rsh.size = Vector3(rail_half * 2, RAIL_H, 0.1)
+	rcs.shape = rsh
+	rail.position = Vector3(0, BALC_Y + RAIL_H * 0.5, BALC_Z)
+	rail.add_child(rcs)
+	add_child(rail)
+	var bx := -rail_half
+	while bx <= rail_half:
+		_deco_box(Vector3(0.07, RAIL_H, 0.07), Vector3(bx, BALC_Y + RAIL_H * 0.5, BALC_Z), "dark")
+		bx += 0.16
+	_deco_box(Vector3(rail_half * 2, 0.08, 0.16), Vector3(0, BALC_Y + RAIL_H, BALC_Z), "wood")
+	_deco_box(Vector3(rail_half * 2, 0.06, 0.12), Vector3(0, BALC_Y + 0.05, BALC_Z), "wood")
+	_rect_obs(Vector2(0, BALC_Z), Vector2(rail_half, 0.05), RAIL_H, 1, false, "railing")
 	# posts holding it up
 	for x in [-10.0, -4.5, 4.5, 10.0]:
 		_box(Vector3(0.3, BALC_Y, 0.3), Vector3(x, BALC_Y * 0.5, BALC_Z - 0.1), "dark")
@@ -557,6 +578,24 @@ func line_clear(from: Vector3, to: Vector3) -> bool:
 func ray(from: Vector3, to: Vector3) -> Dictionary:
 	var q := PhysicsRayQueryParameters3D.create(from, to, LAYER_WORLD)
 	return get_world_3d().direct_space_state.intersect_ray(q)
+
+
+## A slug's flight: hard cover stops it; balusters stop it with probability SOFT_STOP.
+func bullet_ray(from: Vector3, to: Vector3, rng: RandomNumberGenerator) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(from, to, LAYER_WORLD | LAYER_SOFT)
+	var excl: Array[RID] = []
+	for i in 4:
+		q.exclude = excl
+		var hit := space.intersect_ray(q)
+		if hit.is_empty():
+			return hit
+		var col: CollisionObject3D = hit["collider"]
+		if col.collision_layer & LAYER_SOFT and rng.randf() > SOFT_STOP:
+			excl.append(hit["rid"])
+			continue
+		return hit
+	return {}
 
 
 func reset_props() -> void:
