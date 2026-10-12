@@ -39,6 +39,10 @@ yours to rewrite. Part of the [Precog sim suite](https://apps.precogsoftwareserv
   minute from death, two about half that. Blood pools on the floor and men can **slip** in it.
 - **Aim time is accuracy:** spread x(1 + 2.2 e^(-t/0.42)). Six in the Colt, **18 rounds** in all,
   then fists. Guns **jam**, especially in a scuffle; a punch to a raised gun can jam it.
+- **Inside 3 feet nobody shoots:** there's no room to level a Colt (or throw a star). Men punch,
+  kick (a boot drives a man back a stride and can drop him - or send him over the rail) or grab
+  hold and wrestle: both locked a second or two, guns liable to jam, until one throws the other
+  down. Blade- and staff-men still swing, short, and kick.
 - **Blades and staffs:** reach, wind-up, and the other man's defence - he can **block** a blow he
   sees coming (and a star), **parry** and riposte, or **dodge**. A katana cuts (bleeds; finds the
   throat and heart more often in a better swordsman's hands); nunchaku and staff bruise, break
@@ -79,7 +83,7 @@ when melee and in_reach -> rush nearest
 otherwise -> default
 ```
 
-About 33 yes/no conditions (bleeding, pinned, aimed_at, enemy_reloading, high, edge, outnumbered,
+About 35 yes/no conditions (bleeding, pinned, aimed_at, enemy_reloading, high, edge, clinch, outnumbered,
 super, melee, in_reach, has_bottle, near_bottle, ...), 14 numbers (hp, bleed_secs, ammo, nearest, time, diff, random, ...),
 12 actions (hold, advance, hide, flank, rush nearest|weakest|reloading|high|aiming|melee,
 fall back, take high, hunt, flip table, grab bottle, cower, default), `set <trait>` and `aim <multiplier>`.

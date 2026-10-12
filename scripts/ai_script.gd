@@ -50,6 +50,8 @@ const BOOLS := {
 	"has_bottle": "he has a bottle in his hand",
 	"near_bottle": "a bottle (bar, shelf or table) within 7 m",
 	"edge": "he is near the open edge of the balcony or a roof",
+	"clinch": "an enemy is within 3 ft - too close to shoot; it's fists, boots or wrestling",
+	"wrestling": "he is locked in a wrestle",
 }
 const NUMS := {
 	"hp": "health 0-100",

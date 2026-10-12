@@ -32,6 +32,7 @@ const BLEED := {"gut": 1.1, "arm_r": 1.4, "arm_l": 1.4, "leg_l": 1.4, "leg_r": 1
 const MISFIRE := 0.015      # a bad cap, a cylinder out of line
 const JAM_SCUFFLE := 0.22   # ... much likelier with a man hanging on your gun hand
 const JAM_CLEAR := 1.6      # seconds to work it free, two hands
+const CLINCH := 0.95        # 3 ft: too close to bring a gun to bear - punch, kick or wrestle
 const PUNCH_JAM := 0.32     # a punch to a man with his gun up can knock the cylinder out of line
 
 var team := 0
@@ -112,6 +113,12 @@ var throw_wind := -1.0
 var throw_target: Gunman = null
 var _bottle_cd := 0.0
 var bottle_mi: MeshInstance3D = null
+# inside 3 ft: the blow being thrown, and a wrestling clinch
+var blow := ""                # "kick" while a kick is coming; "" for a punch or weapon blow
+var wrestle_t := -1.0
+var wrestle_with: Gunman = null
+var wrestle_lead := false     # he started it; he resolves it
+var _clinch_t := 0.0
 # going over the rail (or off a roof)
 var falling := false
 var fall_dead := false        # the hit killed him; the fall is only where he lands
@@ -205,7 +212,7 @@ func _ready() -> void:
 		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0,
 		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": "", "jams": 0, "slips": 0, "gun_knocks": 0, "bled": 0.0,
 		"kind": kind, "grade": grade, "faction": faction, "jumps": 0, "blocks": 0, "parries": 0, "dodges": 0, "melee_hits": 0, "melee_kills": 0, "stars": 0, "star_hits": 0, "rules": {},
-		"bottles": 0, "bottle_hits": 0, "falls": 0, "fall_kills": 0}
+		"bottles": 0, "bottle_hits": 0, "falls": 0, "fall_kills": 0, "kicks": 0, "kick_hits": 0, "wrestles": 0, "throws": 0}
 	for i in 12:
 		stats["aimr"].append([0, 0])
 	_last_pos = global_position
@@ -564,6 +571,8 @@ func total_ammo() -> int:
 ## The stance as you'd describe it from across the room: a man ducking behind his table is
 ## ducking, whatever he is in the middle of.
 func shown_stance() -> String:
+	if wrestle_t >= 0.0:
+		return "wrestle"
 	if stance == "cower":
 		return "cower"
 	if duck_t > 0.0:
@@ -704,7 +713,14 @@ func _physics_process(delta: float) -> void:
 		_traverse(delta)
 		_pose(delta)
 		return
-	_move(delta)
+	if wrestle_t >= 0.0:
+		velocity.x = 0.0
+		velocity.z = 0.0
+		move_and_slide()
+		if wrestle_with != null and is_instance_valid(wrestle_with):
+			face_toward(wrestle_with.global_position, delta)
+	else:
+		_move(delta)
 	_fight(delta)
 	_pose(delta)
 
@@ -754,6 +770,8 @@ func rule_value(name: String) -> Variant:
 		"arm_hit": return arms_hit() > 0
 		"pinned": return suppression > 0.75
 		"has_bottle": return has_bottle
+		"clinch": return _nearest_enemy_alive(CLINCH) != null
+		"wrestling": return wrestle_t >= 0.0
 		"near_bottle": return saloon.bottle_within(global_position, 7.0) != null
 		"edge": return global_position.y > 1.2 and not saloon.fall_edge(global_position, 1.2).is_empty()
 		"alone":
@@ -1675,6 +1693,24 @@ func _fight(delta: float) -> void:
 		if punch_wind < 0.0:
 			_punch_land()
 		return
+	# --- locked together: nobody shoots, nobody walks off
+	if wrestle_t >= 0.0:
+		aim_target = null
+		wrestle_t -= delta
+		if wrestle_with == null or not is_instance_valid(wrestle_with) or not wrestle_with.alive or wrestle_with.falling or wrestle_with.wrestle_with != self:
+			_end_wrestle()
+		elif wrestle_t < 0.0 and wrestle_lead:
+			_resolve_wrestle()
+		return
+	# --- inside 3 ft: no room to bring a gun (or a throw) to bear
+	var close := _nearest_enemy_alive(CLINCH)
+	if close != null and not close.falling and close.trav_t < 0.0 and knocked_t <= 0.0:
+		aim_target = null
+		fanning = false
+		if stagger_t > 0.0 or punch_cd > 0.0 or not facing(close.global_position, 0.0):
+			return
+		_close_quarters(close)
+		return
 	if near != null:
 		# right in front of him: shoot from the hip, or knock his gun aside and hit him? Decided
 		# afresh every so often - brawlers, and men whose own gun is on them, go for the fists
@@ -1961,6 +1997,9 @@ func _aim_point(e: Gunman) -> Vector3:
 
 
 func _fire(tgt: Gunman) -> void:
+	if _nearest_enemy_alive(CLINCH) != null:
+		aim_target = null
+		return
 	crouched = false
 	# the hammer falls - and sometimes nothing happens. Fighting with a man at arm's length,
 	# hanging on your wrist, it happens a good deal more.
@@ -2068,11 +2107,13 @@ func _punch_land() -> void:
 			dodge *= 0.3
 		var block := float(e.weapon()["block"]) * (0.7 + 0.3 * e.ab_smarts) * (1.0 - 0.3 * ab_smarts) * (1.0 if e.arms_hit() == 0 else 0.35)
 		if rng.randf() < dodge:
+			blow = ""
 			e.stats["dodges"] += 1
 			e.velocity += dir * 3.5
 			manager.sound("swing", e.global_position + Vector3(0, 1.2, 0), 0.8, -8.0)
 			return
 		if rng.randf() < block:
+			blow = ""
 			e.stats["blocks"] += 1
 			e._riposte = true
 			e.punch_cd = minf(e.punch_cd, 0.05)
@@ -2095,6 +2136,19 @@ func _punch_land() -> void:
 		if e.gun == "colt" and rng.randf() < PUNCH_JAM * punch_power():
 			stats["gun_knocks"] += 1
 			e._jam("knocked")
+	if blow == "kick":
+		blow = ""
+		stats["kick_hits"] += 1
+		manager.sound("thud", e.global_position + Vector3(0, 1.0, 0), 0.75, 1.0)
+		# the boot: in the gut or the knee, and it drives him back a stride
+		var knee := rng.randf() < 0.22
+		var broke := knee and rng.randf() < 0.25 * punch_power()
+		e.velocity += dir * (3.0 + 1.5 * ab_jump)
+		e.take_damage((9.0 + 5.0 * ab_jump) * punch_power(), "kick", self, ("leg_r" if rng.randf() < 0.5 else "leg_l") if broke else "bruise", dir)
+		if e.alive and not e.falling and e.knocked_t <= 0.0 and rng.randf() < 0.28 + 0.25 * ab_jump + (0.25 if e.legs_hit() > 0 else 0.0):
+			stats["knockdowns"] += 1
+			e.knock_down(1.3)
+		return
 	var w := weapon()
 	var kd := rng.randf() < float(w["kd"]) * punch_power() * (1.0 + 0.6 * p("brawl")) + (0.25 if e.legs_hit() > 0 else 0.0)
 	match melee:
@@ -2182,6 +2236,98 @@ func _melee_target() -> Gunman:
 		bd = d
 		best = e
 	return best
+
+
+# ---------------------------------------------------------------- inside 3 feet
+
+## Chest to chest there's no room to level a Colt: a man punches, kicks or grabs hold. A blade-
+## or staff-man still swings (short), and kicks. Every so often he picks afresh.
+func _close_quarters(e: Gunman) -> void:
+	var fists := can_punch()
+	var legs := legs_hit() == 0
+	var w_punch := (0.5 + 0.3 * p("brawl")) if fists else 0.0
+	var w_kick := (0.25 + 0.35 * ab_jump + (0.2 if family == "ninja" else 0.0)) if legs else 0.0
+	var w_wrestle := 0.0
+	if not melee_first() and arms_hit() < 2 and e.wrestle_t < 0.0 and wrestle_t < 0.0:
+		w_wrestle = 0.2 + 0.35 * p("brawl") + (0.25 if e.aim_target == self else 0.0)
+	if melee_first():
+		w_punch = 0.65   # the blade, close
+	var tot := w_punch + w_kick + w_wrestle
+	if tot <= 0.0:
+		return   # nothing left to fight with: he can only hang on
+	var r := rng.randf() * tot
+	if r < w_wrestle:
+		_start_wrestle(e)
+		return
+	punch_target = e
+	if r < w_wrestle + w_kick:
+		blow = "kick"
+		stats["kicks"] += 1
+		punch_wind = 0.36 / ab_speed
+		punch_cd = 0.95 / ab_speed
+		manager.sound("swing", global_position + Vector3(0, 0.9, 0), 0.8, -6.0)
+		if family == "ninja" and rng.randf() < 0.3:
+			say("kiai")
+		return
+	blow = ""
+	var w := weapon()
+	punch_wind = float(w["wind"]) * (0.8 if melee_first() else 1.0) / ab_speed
+	punch_cd = (float(w["cd"]) - 0.15 * p("brawl")) * (1.0 if arms_hit() == 0 else 1.6) / ab_speed
+	stats["punches"] += 1
+	manager.sound("swing", global_position + Vector3(0, 1.4, 0), 1.25 if melee == "nunchaku" else 1.0, -6.0)
+
+
+## Grab him: both locked a second or two, no shooting, no walking; then one throws the other.
+func _start_wrestle(e: Gunman) -> void:
+	stats["wrestles"] += 1
+	var t := rng.randf_range(0.9, 1.8)
+	wrestle_t = t
+	wrestle_with = e
+	wrestle_lead = true
+	e.wrestle_t = t + 0.5
+	e.wrestle_with = self
+	e.wrestle_lead = false
+	e.aim_target = null
+	e.reloading = false
+	e.punch_wind = -1.0
+	e.punch_target = null
+	e.throw_wind = -1.0
+	e.grab_t = -1.0
+	_stop()
+	e._stop()
+	manager.sound("thud", global_position + Vector3(0, 1.2, 0), 0.6, -6.0)
+	# a gun between two men wrestling for it goes off - or jams
+	for m in [self, e]:
+		if m.gun == "colt" and m.cylinder > 0 and not m.jammed and rng.randf() < JAM_SCUFFLE:
+			m._jam("jammed in the wrestle")
+
+
+func _wrestle_strength() -> float:
+	return 0.5 + 0.3 * p("brawl") + 0.2 * p("nerve") + 0.35 * (ab_speed - 1.0) + 0.2 * ab_smarts - 0.25 * legs_hit() - 0.2 * arms_hit() - (0.15 if wounds["gut"] > 0 else 0.0) + rng.randf() * 0.5
+
+
+func _resolve_wrestle() -> void:
+	var e := wrestle_with
+	var win := _wrestle_strength() >= e._wrestle_strength()
+	var top: Gunman = self if win else e
+	var bottom: Gunman = e if win else self
+	_end_wrestle()
+	top.stats["throws"] += 1
+	manager.sound("thud", bottom.global_position + Vector3(0, 0.3, 0), 0.6, 2.0)
+	var dir := top.flat(bottom.global_position - top.global_position).normalized()
+	bottom.take_damage(7.0 * top.punch_power(), "throw", top, "fists", dir)
+	if bottom.alive and not bottom.falling:
+		bottom.knock_down(1.6)
+		top.punch_cd = 0.15
+
+
+func _end_wrestle() -> void:
+	var e := wrestle_with
+	wrestle_t = -1.0
+	wrestle_with = null
+	if e != null and is_instance_valid(e) and e.wrestle_with == self:
+		e.wrestle_t = -1.0
+		e.wrestle_with = null
 
 
 # ---------------------------------------------------------------- bottles
@@ -2327,7 +2473,7 @@ func _drop_bottle() -> void:
 func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 	if falling or trav_t >= 0.0 or global_position.y < 1.2:
 		return false
-	var shove := how in ["fists", "blunt", "blade", "bottle"]
+	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw"]
 	var toward := flat(dir).normalized() if shove and flat(dir).length() > 0.01 else Vector3.ZERO
 	# a dying man staggers a step or two before he goes; a blow drives a man back a good stride
 	var e := saloon.fall_edge(global_position, 1.5 if fatal else (1.6 if shove else 0.9), toward)
@@ -2341,6 +2487,8 @@ func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 			chance = 0.95 if fatal else 0.3 + 0.25 * (by.punch_power() if by != null and is_instance_valid(by) else 1.0)
 		"blunt", "bottle":
 			chance = 0.95 if fatal else 0.5
+		"kick", "throw":
+			chance = 0.95 if fatal else 0.6
 		"blade":
 			chance = 0.9 if fatal else 0.3
 	if knocked_t > 0.0 or legs_hit() > 0:
@@ -2352,6 +2500,8 @@ func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 
 
 func _start_fall(e: Dictionary, by: Gunman, how: String, fatal: bool) -> void:
+	if wrestle_t >= 0.0:
+		_end_wrestle()
 	falling = true
 	fall_dead = fatal
 	fall_by = by
@@ -2445,7 +2595,7 @@ func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vect
 		wounds[part] += 1
 		stats["wounds"].append(part)
 		_wound_visual(part)
-		if how != "blunt":
+		if how != "blunt" and how != "kick":
 			bleed += float(BLEED.get(part, 1.2))
 			bleed_by = by
 		if manager.blood != null:
@@ -2535,6 +2685,10 @@ func _wound_visual(part: String) -> void:
 
 
 func knock_down(t: float) -> void:
+	if wrestle_t >= 0.0:
+		_end_wrestle()
+	blow = ""
+	punch_wind = -1.0
 	knocked_t = t
 	aim_target = null
 	reloading = false
@@ -2560,6 +2714,8 @@ func _hurt_flash() -> void:
 
 
 func _die(by: Gunman, how: String, dir: Vector3) -> void:
+	if wrestle_t >= 0.0:
+		_end_wrestle()
 	alive = false
 	stats["alive"] = false
 	stats["hp"] = 0.0
@@ -2567,7 +2723,7 @@ func _die(by: Gunman, how: String, dir: Vector3) -> void:
 	stats["killed_by"] = by.gm_name if by != null else "?"
 	if by != null and by.team != team:
 		by.stats["kills"] += 1
-		if how == "fists":
+		if how == "fists" or how == "kick" or how == "throw":
 			by.stats["fist_kills"] += 1
 		elif how == "blade" or how == "blunt":
 			by.stats["melee_kills"] += 1
@@ -2706,6 +2862,20 @@ func _pose(delta: float) -> void:
 			gun_arm.rotation.x = lerpf(gun_arm.rotation.x, 1.1 if ready else 0.3, clampf(delta * 10.0, 0, 1))
 			if melee == "staff":
 				off_arm.rotation.x = lerpf(off_arm.rotation.x, 1.0 if ready else 0.4, clampf(delta * 10.0, 0, 1))
+	# the boot coming up
+	if blow == "kick" and punch_wind >= 0.0:
+		var ku := 1.0 - clampf(punch_wind / maxf(0.36 / ab_speed, 0.05), 0.0, 1.0)
+		leg_r.rotation.x = lerpf(0.2, 1.5, ku)
+		gun_arm.rotation.x = lerpf(gun_arm.rotation.x, 0.6, clampf(delta * 10.0, 0, 1))
+	# locked together: leaning in, both arms round him
+	if wrestle_t >= 0.0:
+		body_root.rotation.x = lerpf(body_root.rotation.x, -0.35, clampf(delta * 10.0, 0, 1))
+		arm_l.rotation.x = lerpf(arm_l.rotation.x, 1.3, clampf(delta * 12.0, 0, 1))
+		arm_r.rotation.x = lerpf(arm_r.rotation.x, 1.3, clampf(delta * 12.0, 0, 1))
+		arm_l.rotation.z = 0.0
+		arm_r.rotation.z = 0.0
+	elif knocked_t <= 0.0 and trav_t < 0.0 and not falling and absf(body_root.rotation.x + 0.35) < 0.02:
+		body_root.rotation.x = 0.0
 
 
 func celebrate() -> void:

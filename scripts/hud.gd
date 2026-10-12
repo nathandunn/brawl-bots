@@ -777,6 +777,10 @@ func _fate(m: Dictionary) -> String:
 		how = "beaten down"
 	elif dh == "bottle":
 		how = "brained with a bottle"
+	elif dh == "kick":
+		how = "kicked to death"
+	elif dh == "throw":
+		how = "thrown down and finished"
 	if bool(m.get("fell", false)) and dp != "fall":
 		how += ", and over the rail"
 	var by := " by %s" % String(m["killed_by"]) if dp != "bled out" else " (wound from %s)" % String(m["killed_by"])
