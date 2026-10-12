@@ -12,19 +12,23 @@ signal match_ended(result: Dictionary)
 signal celebration_finished(match_index: int)
 signal announced(text: String, team: int)
 
-const TEAM_SIZE := 5
+const TEAM_SIZE := 5        # the default
+const MAX_TEAM := 12
 const MATCH_TIME := 120.0
 const SUDDEN_DEATH_CAP := 45.0
 const STANDOFF := 3.0      # the piano stops; nobody draws until the bottle breaks
-const TEAM_NAMES := ["Outlaws", "Law"]
-## How each side is spoken of in a sentence.
+const TEAM_NAMES := ["Outlaws", "Law"]           # (defaults; the live names are team_names)
 const TEAM_WINS := ["The Outlaws win", "The Law wins"]
-const TEAM_COLORS := [Color(0.72, 0.2, 0.16), Color(0.3, 0.42, 0.62)]   # outlaw red, lawman blue-grey
+const TEAM_COLORS := [Color(0.72, 0.2, 0.16), Color(0.3, 0.42, 0.62)]
+## A throwing star where it lands: it rarely kills outright, but it always bleeds.
+const STAR_DMG := {"head": 55.0, "heart": 45.0, "gut": 18.0, "arm_r": 8.0, "arm_l": 8.0, "leg_l": 8.0, "leg_r": 8.0}
+const STAR_SPEED := 24.0
+const STANDOFF_LINES := {"saloon": "The piano stops. Nobody draws for %d seconds...", "dojo": "The fighters bow. %d breaths...",
+	"bamboo": "The wind drops in the bamboo. %d seconds...", "temple": "The temple bell sounds. %d seconds..."}
 ## Where a slug lands decides everything. Head or heart: dead. Gut: badly hurt and bleeding.
 ## Arm or leg: not much blood, but he can't shoot, punch or walk right after (see Gunman).
 const DMG := {"head": 999.0, "heart": 999.0, "gut": 38.0, "arm_r": 12.0, "arm_l": 12.0, "leg_l": 12.0, "leg_r": 12.0}
 const PART_NAMES := {"head": "head", "heart": "heart", "gut": "gut", "arm_r": "gun arm", "arm_l": "left arm", "leg_l": "left leg", "leg_r": "right leg"}
-const SPAWNS := [Vector2(13.2, 4.0), Vector2(12.9, 6.3), Vector2(10.2, 6.4), Vector2(9.8, 3.4), Vector2(13.8, 7.6)]
 
 var world: Node3D
 var saloon: Saloon
@@ -33,8 +37,18 @@ var blood: Blood = null
 var _corpses: Array = []    # [position, blood left to give]
 var headless := false
 var doctrines: Array[String] = ["Adaptive", "Adaptive"]
-var team_presets: Array[String] = ["Balanced", "Balanced"]
-var player_preset := [["", "", "", "", ""], ["", "", "", "", ""]]   # "" = follow the team
+var team_presets: Array[String] = ["Balanced", "Balanced"]     # character (kind) for the whole side
+var factions: Array[String] = ["outlaws", "law"]
+var team_sizes: Array[int] = [TEAM_SIZE, TEAM_SIZE]
+var team_grades: Array[String] = ["Regular", "Regular"]
+var player_preset := [[], []]    # per man: "" = follow the team
+var player_grade := [[], []]
+var scripts: Array = [null, null]          # AiScript per side (null = built-in brain only)
+var script_text: Array[String] = ["", ""]
+var team_names: Array[String] = ["Outlaws", "Law"]
+var team_colors: Array[Color] = [TEAM_COLORS[0], TEAM_COLORS[1]]
+var team_wins: Array[String] = ["The Outlaws win", "The Law wins"]
+var _pending: Array = []      # [due time, callable] - stars in flight
 var custom := [null, null]       # Personality edited with the sliders, used when preset is "Custom"
 var gunmen: Array[Gunman] = []
 var brains: Array[TeamBrain] = []
@@ -57,6 +71,7 @@ var _tracer_mat: StandardMaterial3D
 var _dust_mat: StandardMaterial3D
 var _glass_mat: StandardMaterial3D
 var _blood_mat: StandardMaterial3D = null
+var _star_mat: StandardMaterial3D = null
 var first_blood := -1.0
 
 
@@ -75,6 +90,38 @@ func _ready() -> void:
 	_glass_mat = StandardMaterial3D.new()
 	_glass_mat.albedo_color = Color(0.6, 0.85, 0.7, 0.8)
 	_glass_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+
+func _init() -> void:
+	for t in 2:
+		for i in MAX_TEAM:
+			player_preset[t].append("")
+			player_grade[t].append("")
+
+
+## Names and colours from the factions; the same faction on both sides gets told apart.
+func refresh_identity() -> void:
+	for t in 2:
+		var f: Dictionary = Roster.FACTIONS[factions[t]]
+		team_names[t] = String(f["name"])
+		team_colors[t] = f["color"]
+		team_wins[t] = String(f["wins"])
+	if factions[0] == factions[1]:
+		team_names[1] += " II"
+		team_wins[1] = team_wins[1].replace(String(Roster.FACTIONS[factions[1]]["name"]), team_names[1])
+		team_colors[1] = team_colors[1].lightened(0.45)
+
+
+## Set a side's faction; its characters reset to that faction's default if they don't fit.
+func set_faction(t: int, f: String) -> void:
+	factions[t] = f
+	var ks: Array = Roster.kinds_for(f)
+	if not ks.has(team_presets[t]) and team_presets[t] != "Custom" and team_presets[t] != "Random":
+		team_presets[t] = Roster.default_kind(f)
+	for i in MAX_TEAM:
+		if player_preset[t][i] != "" and not ks.has(player_preset[t][i]):
+			player_preset[t][i] = ""
+	refresh_identity()
 
 
 func personality_for(t: int, i: int) -> Array:
@@ -111,39 +158,62 @@ func start_match(seed_value: int = -1) -> void:
 		b.rng.seed = rng.randi()
 		b.setup(t, self, saloon, doctrines[t])
 		brains.append(b)
+	refresh_identity()
 	for t in 2:
-		var slots := [0, 1, 2, 3, 4]
-		for k in range(4, 0, -1):
+		var n: int = clampi(team_sizes[t], 1, MAX_TEAM)
+		var slots: Array = []
+		for k in n:
+			slots.append(k)
+		for k in range(n - 1, 0, -1):
 			var j := rng.randi_range(0, k)
 			var tmp = slots[k]
 			slots[k] = slots[j]
 			slots[j] = tmp
-		for i in TEAM_SIZE:
+		for i in n:
 			var g := Gunman.new()
 			g.team = t
 			g.idx = i
-			g.gm_name = "%s%d" % [TEAM_NAMES[t][0], i + 1]
+			g.gm_name = "%s%d" % [String(Roster.FACTIONS[factions[t]]["letter"]) + ("" if t == 0 or factions[0] != factions[1] else "'"), i + 1]
 			var pp := personality_for(t, i)
 			g.preset_name = pp[0]
 			g.personality = pp[1]
+			if scripts[t] != null:
+				for k in (scripts[t] as AiScript).trait_set:
+					g.personality.t[k] = float((scripts[t] as AiScript).trait_set[k])
+			g.faction = factions[t]
+			g.family = Roster.family(factions[t])
+			g.kind = pp[0] if Roster.kinds_for(factions[t]).has(pp[0]) else Roster.default_kind(factions[t])
+			g.grade = String(player_grade[t][i]) if String(player_grade[t][i]) != "" else team_grades[t]
+			var ab := Roster.abilities(g.grade, g.kind)
+			g.ab_speed = ab["speed"]
+			g.ab_jump = ab["jump"]
+			g.ab_smarts = ab["smarts"]
+			g.ab_aim = float(ab.get("aim", 1.0))
+			g.personality.t["nerve"] = clampf(g.personality.g("nerve") + float(ab.get("nerve", 0.0)), 0.0, 1.0)
+			var lo := Roster.loadout(g.kind, factions[t])
+			g.gun = String(lo["gun"])
+			g.melee = String(lo["melee"])
+			g.loadout_stars = int(lo["stars"])
+			g.stealth = bool(lo.get("stealth", false))
+			g.script_rules = scripts[t]
 			g.manager = self
 			g.saloon = saloon
 			g.brain = brains[t]
-			g.team_color = TEAM_COLORS[t]
+			g.team_color = team_colors[t]
 			g.rng.seed = rng.randi()
 			g.voice_id = (i + t) % 3
 			g.voice_pitch = rng.randf_range(0.9, 1.1)
 			g.show_intent = show_intents
-			var sp: Vector2 = SPAWNS[slots[i]]
-			var s := -1.0 if t == 0 else 1.0
-			g.position = Vector3(sp.x * s + rng.randf_range(-0.3, 0.3), 0.05, sp.y + rng.randf_range(-0.3, 0.3))
+			var sp := saloon.spawn_point(t, slots[i])
+			g.position = sp + Vector3(rng.randf_range(-0.15, 0.15), 0, rng.randf_range(-0.15, 0.15))
 			g.rotation.y = -PI * 0.5 if t == 0 else PI * 0.5
 			g.died.connect(_on_died)
 			world.add_child(g)
 			gunmen.append(g)
 			brains[t].members.append(g)
 	running = true
-	announce(-1, "The piano stops. Nobody draws for %d seconds..." % int(STANDOFF))
+	_pending.clear()
+	announce(-1, String(STANDOFF_LINES.get(saloon.map_id, STANDOFF_LINES["saloon"])) % int(STANDOFF))
 	match_started.emit(match_index)
 
 
@@ -197,6 +267,11 @@ func set_show_intents(on: bool) -> void:
 func _physics_process(delta: float) -> void:
 	dance_clock += delta
 	_tick_fx(delta)
+	for i in range(_pending.size() - 1, -1, -1):
+		if elapsed >= float(_pending[i][0]):
+			var c: Callable = _pending[i][1]
+			_pending.remove_at(i)
+			c.call()
 	# the dead go on bleeding into the boards for a while
 	for c in _corpses:
 		if c[1] > 0.0:
@@ -214,7 +289,7 @@ func _physics_process(delta: float) -> void:
 	var before := elapsed
 	elapsed += delta
 	if before < STANDOFF and elapsed >= STANDOFF:
-		announce(-1, "DRAW!")
+		announce(-1, "DRAW!" if Roster.family(factions[0]) == "west" or Roster.family(factions[1]) == "west" else "HAJIME!")
 		if sfx != null:
 			sfx.voice("draw", 0, Vector3(0, 2.0, 0))
 		sound("smash", Vector3(0, 1.4, 7.6))
@@ -245,7 +320,7 @@ func _physics_process(delta: float) -> void:
 
 func _on_died(g: Gunman, killer: Gunman, how: String) -> void:
 	last_damage_t = elapsed
-	if how == "gun":
+	if how != "fists" and how != "blunt":
 		_corpses.append([g.global_position, 14.0])
 	if first_blood < 0.0:
 		first_blood = elapsed
@@ -346,6 +421,107 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 				sound("whiz", g.global_position + Vector3(0, 1.6, 0), rng.randf_range(0.85, 1.2), -6.0)
 	_tracer(from, stop)
 	return res
+
+
+## A throwing star: silent (nobody can count them), slower than a slug, stopped by most of
+## what stops a slug and by a paper screen half the time, and turned aside by a blade or staff
+## held up to meet it. Resolved along its line at the throw; lands when it gets there.
+func throw_star(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
+	var from := thrower.muzzle()
+	var dir := (aim - from).normalized()
+	var right := dir.cross(Vector3.UP)
+	if right.length() < 0.01:
+		right = Vector3.RIGHT
+	right = right.normalized()
+	var up := right.cross(dir).normalized()
+	sigma *= 1.6
+	dir = (dir + right * rng.randfn(0.0, sigma) + up * rng.randfn(0.0, sigma) + Vector3(0, -0.01, 0)).normalized()
+	var end := from + dir * 20.0
+	var hit := saloon.bullet_ray(from, end, rng, 0.5)
+	var stop: Vector3 = hit.get("position", end)
+	var seg_len := from.distance_to(stop)
+	thrower.stats["shots"] += 1
+	thrower.stats["stars"] += 1
+	sound("swing", from, 1.6, -8.0)
+	var victim: Gunman = null
+	var best_t := seg_len
+	var hit_y := 0.0
+	for g in alive_gunmen():
+		if g == thrower:
+			continue
+		var r := _ray_capsule(from, dir, seg_len, g)
+		if r.x >= 0.0 and r.x < best_t:
+			best_t = r.x
+			victim = g
+			hit_y = r.y
+	if victim != null:
+		stop = from + dir * best_t
+	var flight := from.distance_to(stop) / STAR_SPEED
+	_star_visual(from, stop, flight)
+	var res := {"hit": victim}
+	var v := victim
+	var at := stop
+	var hy := hit_y
+	_pending.append([elapsed + flight, func():
+		if v != null and is_instance_valid(v) and v.alive:
+			# held up to meet it: a blade or staff turns a star he's watching
+			var bl := float(v.weapon()["block"]) * 0.7 * (0.5 + 0.5 * v.ab_smarts)
+			if v.facing(from, 0.5) and v.punch_wind < 0.0 and v.knocked_t <= 0.0 and rng.randf() < bl:
+				v.stats["blocks"] += 1
+				sound("clang", at, 1.4, -4.0)
+				return
+			var part := hit_part(v, at, hy)
+			if v.team != thrower.team and is_instance_valid(thrower):
+				thrower.stats["hits"] += 1
+				thrower.stats["star_hits"] += 1
+				if part == "head" or part == "heart":
+					thrower.stats["heads"] += 1
+			last_damage_t = elapsed
+			sound("wood", at, 1.3, -4.0)
+			v.take_damage(float(STAR_DMG[part]) * rng.randf_range(0.85, 1.15), "star", thrower if is_instance_valid(thrower) else null, part, dir)
+		else:
+			sound("wood", at, 1.5, -8.0)
+	])
+	# a star whispering past still makes a man flinch, though nobody hears where it came from
+	for g in alive_gunmen():
+		if g == thrower or g == victim:
+			continue
+		var d := _seg_dist_to_body(from, stop, g)
+		if d < 0.8:
+			g.suppression = minf(1.5, g.suppression + 0.15)
+			sound("whiz", g.global_position + Vector3(0, 1.6, 0), 1.6, -8.0)
+	return res
+
+
+func _star_visual(a: Vector3, b: Vector3, t: float) -> void:
+	if headless:
+		return
+	var mi := MeshInstance3D.new()
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for k in 4:
+		var ang := TAU * k / 4.0
+		var tip := Vector3(cos(ang), 0, sin(ang)) * 0.09
+		var l := Vector3(cos(ang + 0.6), 0, sin(ang + 0.6)) * 0.03
+		var r := Vector3(cos(ang - 0.6), 0, sin(ang - 0.6)) * 0.03
+		for v in [Vector3.ZERO, r, tip, Vector3.ZERO, tip, l]:
+			st.set_normal(Vector3.UP)
+			st.add_vertex(v)
+	mi.mesh = st.commit()
+	if _star_mat == null:
+		_star_mat = StandardMaterial3D.new()
+		_star_mat.albedo_color = Color(0.85, 0.87, 0.92)
+		_star_mat.emission_enabled = true
+		_star_mat.emission = Color(0.5, 0.5, 0.55)
+		_star_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mi.material_override = _star_mat
+	mi.position = a
+	world.add_child(mi)
+	var tw := mi.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(mi, "position", b, maxf(t, 0.05))
+	tw.tween_property(mi, "rotation:y", 40.0 * t, maxf(t, 0.05))
+	_fx.append([mi, t + 1.5])
 
 
 ## Earliest distance along the ray at which it enters the man's capsule, and the height of
@@ -522,7 +698,8 @@ func _end(winner: int, reason: String) -> void:
 	result = {
 		"match": match_index,
 		"winner": winner,
-		"winner_name": TEAM_NAMES[winner] if winner >= 0 else "Draw",
+		"winner_name": team_names[winner] if winner >= 0 else "Draw",
+		"team_names": team_names.duplicate(), "factions": factions.duplicate(), "map": saloon.map_id, "sizes": team_sizes.duplicate(), "grades": team_grades.duplicate(),
 		"reason": reason,
 		"duration": elapsed,
 		"alive": [alive_count(0), alive_count(1)],
@@ -535,7 +712,7 @@ func _end(winner: int, reason: String) -> void:
 		"first_blood": first_blood,
 		"sudden_death": sudden_death,
 	}
-	announce(winner, "%s - %s" % [TEAM_WINS[winner], reason] if winner >= 0 else "Draw")
+	announce(winner, "%s - %s" % [team_wins[winner], reason] if winner >= 0 else "Draw")
 	if winner >= 0:
 		for g in gunmen:
 			if g.alive and g.team == winner:

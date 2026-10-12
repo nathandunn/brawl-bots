@@ -18,35 +18,65 @@ var _league: Array = []        # queue of [reddoc, bluedoc, red, blue, n]
 var _league_rows: Array = []
 var _league_cur := {}
 var _league_n := 0
+var map_choice := "saloon"     # a map id, or "random"
+var _sun: DirectionalLight3D
+var _lamps: Array[OmniLight3D] = []
+var _env: Environment
+var blood: Blood
+var _args := {}
 
 
 func _ready() -> void:
 	var args := _parse_args(OS.get_cmdline_user_args())
 	headless = (DisplayServer.get_name() == "headless" or args.has("sim") or args.has("league") or args.has("presets")) and not args.has("ui")
-	saloon = Saloon.new()
-	add_child(saloon)
+	_args = args
 	_build_lighting()
 	manager = MatchManager.new()
 	manager.world = self
-	manager.saloon = saloon
 	manager.headless = headless
+	map_choice = String(args.get("map", "saloon"))
 	var sfx := Sfx.new()
 	add_child(sfx)
 	manager.sfx = sfx
-	var blood := Blood.new()
-	blood.saloon = saloon
+	blood = Blood.new()
 	blood.headless = headless
 	add_child(blood)
 	manager.blood = blood
+	_ensure_map(_resolve_map())
 	manager.match_ended.connect(_on_match_ended)
 	manager.celebration_finished.connect(_on_celebration_finished)
 	add_child(manager)
 	for k in [["reddoc", 0], ["bluedoc", 1]]:
 		if args.has(k[0]) and TeamBrain.DOCTRINES.has(args[k[0]]):
 			manager.doctrines[k[1]] = args[k[0]]
+	for k in [["redf", 0], ["bluef", 1]]:
+		if args.has(k[0]) and Roster.FACTIONS.has(args[k[0]]):
+			manager.set_faction(k[1], args[k[0]])
 	for k in [["red", 0], ["blue", 1]]:
 		if args.has(k[0]):
 			manager.team_presets[k[1]] = args[k[0]]
+	for k in [["redn", 0], ["bluen", 1]]:
+		if args.has(k[0]):
+			manager.team_sizes[k[1]] = clampi(int(args[k[0]]), 1, MatchManager.MAX_TEAM)
+	for k in [["redgrade", 0], ["bluegrade", 1]]:
+		if args.has(k[0]) and Roster.GRADES.has(args[k[0]]):
+			manager.team_grades[k[1]] = args[k[0]]
+	# --redscript=path/to/file.rules (headless) or literal rules text with ; for newlines
+	for k in [["redscript", 0], ["bluescript", 1]]:
+		if args.has(k[0]):
+			var src := String(args[k[0]])
+			if FileAccess.file_exists(src):
+				src = FileAccess.get_file_as_string(src)
+			elif AiScript.PRESETS.has(src):
+				src = String(AiScript.PRESETS[src])
+			else:
+				src = src.replace(";", "\n")
+			var sc := AiScript.parse(src)
+			if sc.errors.size() > 0:
+				printerr("%s: %s" % [k[0], "\n".join(sc.errors)])
+			manager.script_text[k[1]] = src
+			manager.scripts[k[1]] = sc
+	manager.refresh_identity()
 	if args.has("seed"):
 		_base_seed = int(args["seed"])
 	if args.has("intents"):
@@ -92,7 +122,8 @@ func _ready() -> void:
 		cam._rest_dist = cam.dist
 	hud = Hud.new()
 	add_child(hud)
-	hud.setup(manager)
+	hud.setup(manager, map_choice)
+	hud.map_changed.connect(func(m: String): map_choice = m)
 	hud.new_match_requested.connect(func(): batch_left = 0; batch_results.clear(); _start_next())
 	hud.batch_requested.connect(_run_batch)
 	hud.speed_changed.connect(set_sim_speed)
@@ -107,7 +138,7 @@ func _ready() -> void:
 ## ?lineup=1 - one of each side stood still facing the camera, for looking at the costumes.
 func _lineup() -> void:
 	manager.running = false
-	var picks: Array[Gunman] = [manager.gunmen[0], manager.gunmen[MatchManager.TEAM_SIZE]]
+	var picks: Array[Gunman] = [manager.gunmen[0], manager.gunmen[manager.team_sizes[0]]]
 	for k in 2:
 		var g: Gunman = picks[k]
 		g.global_position = Vector3(-0.45 + 0.9 * k, 0.0, 3.0)
@@ -136,28 +167,60 @@ func set_sim_speed(s: float) -> void:
 
 
 func _build_lighting() -> void:
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-60, 25, 0)
-	sun.light_energy = 0.9
-	sun.light_color = Color(1.0, 0.92, 0.8)
-	sun.shadow_enabled = not headless
-	add_child(sun)
-	for x in [-6.0, 6.0]:
+	_sun = DirectionalLight3D.new()
+	_sun.rotation_degrees = Vector3(-60, 25, 0)
+	_sun.shadow_enabled = not headless
+	add_child(_sun)
+	var env := WorldEnvironment.new()
+	_env = Environment.new()
+	_env.background_mode = Environment.BG_COLOR
+	_env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.environment = _env
+	add_child(env)
+
+
+func _apply_lighting(e: Dictionary) -> void:
+	_sun.light_color = e.get("sun", Color(1, 0.92, 0.8))
+	_sun.light_energy = float(e.get("sun_e", 0.9))
+	_env.background_color = e.get("bg", Color(0.1, 0.08, 0.07))
+	_env.ambient_light_color = e.get("ambient", Color(0.75, 0.62, 0.5))
+	_env.ambient_light_energy = float(e.get("ambient_e", 0.6))
+	for l in _lamps:
+		l.queue_free()
+	_lamps.clear()
+	if headless:
+		return
+	for p in e.get("lamps", []):
 		var l := OmniLight3D.new()
-		l.position = Vector3(x, 4.8, 1.5)
-		l.light_color = Color(1.0, 0.78, 0.45)
+		l.position = p
+		l.light_color = e.get("lamp_c", Color(1.0, 0.78, 0.45))
 		l.light_energy = 1.6
 		l.omni_range = 14.0
 		add_child(l)
-	var env := WorldEnvironment.new()
-	var e := Environment.new()
-	e.background_mode = Environment.BG_COLOR
-	e.background_color = Color(0.1, 0.08, 0.07)
-	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	e.ambient_light_color = Color(0.75, 0.62, 0.5)
-	e.ambient_light_energy = 0.6
-	env.environment = e
-	add_child(env)
+		_lamps.append(l)
+
+
+func _resolve_map() -> String:
+	if map_choice == "random" or not Saloon.MAPS.has(map_choice):
+		return Saloon.MAPS[randi() % Saloon.MAPS.size()] if map_choice == "random" else "saloon"
+	return map_choice
+
+
+## Build the arena for `id` unless it's already standing.
+func _ensure_map(id: String) -> void:
+	if saloon != null and saloon.map_id == id:
+		return
+	if saloon != null:
+		manager.clear()
+		remove_child(saloon)
+		saloon.queue_free()
+	saloon = Saloon.new()
+	add_child(saloon)
+	saloon.build(id)
+	manager.saloon = saloon
+	blood.saloon = saloon
+	blood.clear()
+	_apply_lighting(saloon.env)
 
 
 func _parse_args(list: PackedStringArray) -> Dictionary:
@@ -183,6 +246,7 @@ func _start_next() -> void:
 	var s := -1
 	if _base_seed >= 0:
 		s = _base_seed + manager.match_index
+	_ensure_map(_resolve_map())
 	manager.start_match(s)
 
 
@@ -238,7 +302,7 @@ func _on_match_ended(res: Dictionary) -> void:
 		hud.set_speed_ui(1.0)
 		return
 	if hud != null:
-		hud.set_status("%s - %s" % [MatchManager.TEAM_WINS[res["winner"]] if res["winner"] >= 0 else "Draw", res["reason"]])
+		hud.set_status("%s - %s" % [manager.team_wins[res["winner"]] if res["winner"] >= 0 else "Draw", res["reason"]])
 		if res["winner"] < 0:
 			get_tree().create_timer(1.5).timeout.connect(func(): _on_celebration_finished(res["match"]))
 

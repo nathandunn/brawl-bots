@@ -40,6 +40,8 @@ var contacts := {}             # Gunman -> {pos, t, seen_t, reloading, reload_en
 var shots_counted := {}        # Gunman -> shots fired since we last heard him reload
 var total_counted := {}        # Gunman -> every shot we've counted from him (18 and he's dry)
 var flanker: Gunman = null     # one man at a time slips off round the side
+var mate_down_t := -99.0
+var mate_down_pos := Vector3.ZERO
 var claims := {}               # Gunman -> node id
 var events: Array = []         # [time, text, important]
 var plan_seconds := {}         # plan -> seconds active (for stats)
@@ -86,8 +88,11 @@ func setup(t: int, m: MatchManager, s: Saloon, doc: String) -> void:
 	for i in _n:
 		if not saloon.nodes[i].get("dead", false):
 			_sweep_ids.append(i)
-	for id in _sweep_ids:
-		saloon.team_astar[team].set_point_weight_scale(id, 1.0)
+	for g in saloon.team_graphs[team]:
+		var ga: AStar3D = g
+		for id in _sweep_ids:
+			if ga.has_point(id):
+				ga.set_point_weight_scale(id, 1.0)
 	_start_sweep()
 
 
@@ -128,11 +133,11 @@ func _heard(e: Gunman, noise: float) -> void:
 ## keep the count. A team of hotheads loses count.
 func enemy_fired(e: Gunman) -> void:
 	_heard(e, 1.5)
-	if rng.randf() < 0.45 + 0.55 * _best("discipline"):
+	if rng.randf() < 0.35 + 0.45 * _best("discipline") + 0.2 * _mean_smarts():
 		shots_counted[e] = int(shots_counted.get(e, 0)) + 1
 		total_counted[e] = int(total_counted.get(e, 0)) + 1
-		if int(total_counted[e]) == Gunman.TOTAL:
-			log_event("%s counted 18 from %s - he's dry" % [manager.TEAM_NAMES[team], e.gm_name], true)
+		if int(total_counted[e]) == e.total_rounds() and e.total_rounds() > 1:
+			log_event("%s counted every round %s had - he's dry" % [manager.team_names[team], e.gm_name], true)
 
 
 func enemy_reloading(e: Gunman) -> void:
@@ -181,7 +186,7 @@ func contact_pos(e: Gunman) -> Vector3:
 
 
 func is_dry_est(e: Gunman) -> bool:
-	return int(total_counted.get(e, 0)) >= Gunman.TOTAL
+	return e.total_rounds() > 1 and int(total_counted.get(e, 0)) >= e.total_rounds()
 
 
 func is_empty_est(e: Gunman) -> bool:
@@ -268,11 +273,11 @@ func team_centroid() -> Vector3:
 
 
 func home() -> Vector3:
-	return Vector3(side * 10.0, 0, 3.0)
+	return saloon.home(side)
 
 
 func enemy_home() -> Vector3:
-	return Vector3(-side * 10.0, 0, 3.0)
+	return saloon.home(-side)
 
 
 func crouch_exposure(id: int) -> float:
@@ -310,6 +315,16 @@ func crowding(id: int, g: Gunman) -> float:
 	return c
 
 
+func _mean_smarts() -> float:
+	var t := 0.0
+	var n := 0
+	for g in members:
+		if g.alive:
+			t += g.ab_smarts
+			n += 1
+	return t / maxf(n, 1)
+
+
 func _best(trait_name: String) -> float:
 	var b := 0.0
 	for g in members:
@@ -337,7 +352,7 @@ func _nearest_member_dist(p: Vector3) -> float:
 
 
 func _short(g: Gunman) -> String:
-	return g.gm_name if g != null else manager.TEAM_NAMES[team]
+	return g.gm_name if g != null else manager.team_names[team]
 
 
 func log_event(text: String, important: bool) -> void:
@@ -363,7 +378,7 @@ func tick(delta: float) -> void:
 	phase_t += delta
 	_cmd_t -= delta
 	if _cmd_t <= 0.0:
-		_cmd_t = 0.5
+		_cmd_t = lerpf(0.9, 0.3, _mean_smarts())
 		_command()
 
 
@@ -416,10 +431,12 @@ func _sweep() -> void:
 		_nx_d = t
 		_threats = _sweep_threats.duplicate()
 		var n := float(maxi(_threats.size(), 1))
-		var a: AStar3D = saloon.team_astar[team]
-		for id in _sweep_ids:
-			# a stealthy route treats every metre in an enemy's eye as four
-			a.set_point_weight_scale(id, 1.0 + 4.0 * expo_s[id] / n)
+		for g in saloon.team_graphs[team]:
+			var a: AStar3D = g
+			for id in _sweep_ids:
+				# a stealthy route treats every metre in an enemy's eye as four
+				if a.has_point(id):
+					a.set_point_weight_scale(id, 1.0 + 4.0 * expo_s[id] / n)
 		_start_sweep()
 
 
@@ -453,7 +470,7 @@ func _set_plan(p: String, why: String) -> void:
 	plan_t = 0.0
 	groups = [[], []]
 	_enter_phase(_first_phase(p))
-	log_event("%s: %s%s" % [manager.TEAM_NAMES[team], p, (" - " + why) if why != "" else ""], true)
+	log_event("%s: %s%s" % [manager.team_names[team], p, (" - " + why) if why != "" else ""], true)
 
 
 func _first_phase(p: String) -> String:
@@ -549,8 +566,9 @@ func _order(role: String, zone, push: float, fire: String, move: String) -> Dict
 	return o
 
 
+## High ground nearest to x: a balcony, a rafter, a roof.
 func _balc(x: float) -> Vector3:
-	return Vector3(x, Saloon.BALC_Y, -8.0)
+	return saloon.high_point(x, side)
 
 
 func _assign(own: Array[Gunman]) -> void:
@@ -563,20 +581,20 @@ func _assign(own: Array[Gunman]) -> void:
 		"Dig In":
 			var hi := _rank(own, func(g): return g.p("height"))
 			for g in own:
-				orders[g] = _order("hold", Vector3(s * 9.0, 0, 2.0), -0.5, "exposed_only", "run")
+				orders[g] = _order("hold", saloon.zone(s, 0.60), -0.5, "exposed_only", "run")
 			if own.size() >= 3:
 				orders[hi[0]] = _order("high", _balc(s * 9.0), -0.3, "exposed_only", "run")
 		"Rush":
 			if phase == "stack":
 				for g in own:
-					orders[g] = _order("hold", Vector3(s * 6.0, 0, 1.5), 0.0, "free", "run")
+					orders[g] = _order("hold", saloon.zone(s, 0.40), 0.0, "free", "run")
 				var ready := 0
 				for g in own:
-					if g.flat_dist(Vector3(s * 6.0, 0, 1.5)) < 5.0:
+					if g.flat_dist(saloon.zone(s, 0.40)) < 5.0:
 						ready += 1
 				if phase_t > 4.0 or ready >= own.size() - 1:
 					_enter_phase("charge")
-					log_event("%s: CHARGE!" % manager.TEAM_NAMES[team], true)
+					log_event("%s: CHARGE!" % manager.team_names[team], true)
 			else:
 				# concentration of force: all five onto their floor group, the men upstairs can wait
 				var gc := _ground_contacts_centroid()
@@ -591,14 +609,14 @@ func _assign(own: Array[Gunman]) -> void:
 				for g in groups[0]:
 					orders[g] = _order("high", _balc(-s * 3.0), 0.3, "exposed_only", "run")
 				for g in groups[1]:
-					orders[g] = _order("pin", Vector3(s * 4.0, 0, 1.0), 0.0, "suppress", "run")
+					orders[g] = _order("pin", saloon.zone(s, 0.27), 0.0, "suppress", "run")
 				var over := false
 				for g in groups[0]:
 					if g.alive and g.level() == 1 and g.global_position.x * -s > -1.0:
 						over = true
 				if over or phase_t > 22.0:
 					_enter_phase("spring")
-					log_event("%s: pincer closes" % manager.TEAM_NAMES[team], true)
+					log_event("%s: pincer closes" % manager.team_names[team], true)
 			else:
 				for g in groups[0]:
 					orders[g] = _order("overwatch_high", _balc(-s * 6.0), 0.4, "free", "run")
@@ -612,7 +630,7 @@ func _assign(own: Array[Gunman]) -> void:
 			for g in groups[0]:
 				orders[g] = _order("high", _balc(s * 3.0), 0.15, "free", "run")
 			for g in groups[1]:
-				orders[g] = _order("guard", Vector3(s * 12.5, 0, 4.0), -0.5, "exposed_only", "run")
+				orders[g] = _order("guard", saloon.way_up(s), -0.5, "exposed_only", "run")
 		"Leapfrog":
 			if groups[0].is_empty():
 				var a: Array[Gunman] = []
@@ -637,26 +655,26 @@ func _assign(own: Array[Gunman]) -> void:
 			var bait: Gunman = r[0]
 			for g in own:
 				if g != bait:
-					orders[g] = _order("ambush", Vector3(s * 8.0, 0, 1.5), -0.6, "exposed_only", "sneak")
+					orders[g] = _order("ambush", saloon.zone(s, 0.53), -0.6, "exposed_only", "sneak")
 			if phase == "lure":
-				orders[bait] = _order("bait", Vector3(-s * 1.0, 0, 1.0), 0.9, "free", "run")
+				orders[bait] = _order("bait", saloon.zone(-s, 0.07), 0.9, "free", "run")
 				# show yourself, fire once, then run - before they can settle on you
 				if phase_t > 6.0 or bait.hp < 90.0 or bait.suppression > 0.3 or bait.stats["shots"] > int(_bait_shots0) and phase_t > 1.0:
 					_enter_phase("draw")
 			elif phase == "draw":
-				orders[bait] = _order("retreat", Vector3(s * 11.0, 0, 4.0), -1.0, "hold_fire", "sprint")
+				orders[bait] = _order("retreat", saloon.zone(s, 0.73), -1.0, "hold_fire", "sprint")
 				var near := 0
 				for e in contacts:
-					if is_instance_valid(e) and e.alive and Vector2(contacts[e]["pos"].x - s * 7.0, contacts[e]["pos"].z - 1.5).length() < 9.0:
+					if is_instance_valid(e) and e.alive and Vector2(contacts[e]["pos"].x - saloon.zone(s, 0.47).x, contacts[e]["pos"].z - saloon.mid_z).length() < 9.0:
 						near += 1
 				if near > 0:
 					_enter_phase("spring")
-					log_event("%s: they took the bait" % manager.TEAM_NAMES[team], true)
+					log_event("%s: they took the bait" % manager.team_names[team], true)
 				elif phase_t > 8.0:
 					_enter_phase("lure")
 			else:
 				for g in own:
-					orders[g] = _order("hold", Vector3(s * 6.0, 0, 1.5), 0.3, "free", "run")
+					orders[g] = _order("hold", saloon.zone(s, 0.40), 0.3, "free", "run")
 				if phase_t > 10.0:
 					_enter_phase("lure")
 		_:
@@ -670,7 +688,7 @@ func _assign(own: Array[Gunman]) -> void:
 func _assign_storm(own: Array[Gunman]) -> void:
 	var up := 0
 	for e in contacts:
-		if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) > 2.6:
+		if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) > Saloon.HIGH_Y:
 			up += 1
 	var ours := 0
 	for g in own:
@@ -685,13 +703,13 @@ func _assign_storm(own: Array[Gunman]) -> void:
 	if _stormer == null and _upstairs_t > 6.0 and own.size() >= 2:
 		var r := _rank(own, func(g): return g.p("aggression") + g.p("cunning") + g.p("height") - (2.0 if _punish.has(g) else 0.0))
 		_stormer = r[0]
-		log_event("%s: %s goes up the stairs to clear the balcony" % [manager.TEAM_NAMES[team], _stormer.gm_name], true)
+		log_event("%s: %s goes up the stairs to clear the balcony" % [manager.team_names[team], _stormer.gm_name], true)
 	if _stormer != null:
 		# up our own stair and along the balcony toward them
 		var ex := 0.0
 		var n := 0
 		for e in contacts:
-			if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) > 2.6:
+			if is_instance_valid(e) and e.alive and float(contacts[e]["pos"].y) > Saloon.HIGH_Y:
 				ex += float(contacts[e]["pos"].x)
 				n += 1
 		var tx := ex / maxf(n, 1)
@@ -731,11 +749,13 @@ func _assign_punish(own: Array[Gunman]) -> void:
 				best = g
 		if best != null and rng.randf() < 0.3 + 0.6 * _mean("discipline"):
 			_punish[best] = [e, now() + (8.0 if is_dry_est(e) else 3.5)]
-			log_event("%s counted %s empty - %s goes for him" % [manager.TEAM_NAMES[team], e.gm_name, best.gm_name], true)
+			log_event("%s counted %s empty - %s goes for him" % [manager.team_names[team], e.gm_name, best.gm_name], true)
 
 
 func member_died(g: Gunman, killer: Gunman) -> void:
 	_last_damage_t = now()
+	mate_down_t = now()
+	mate_down_pos = g.global_position
 	claims.erase(g)
 	_punish.erase(g)
 	if killer != null and killer.team != team:

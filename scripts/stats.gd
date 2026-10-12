@@ -26,6 +26,8 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 	var aimr := []
 	var deaths := {}
 	var wounds := {}
+	var melee := [{"hits": 0, "kills": 0, "blocks": 0, "parries": 0, "dodges": 0, "jumps": 0, "stars": 0, "star_hits": 0}, {"hits": 0, "kills": 0, "blocks": 0, "parries": 0, "dodges": 0, "jumps": 0, "stars": 0, "star_hits": 0}]
+	var rules := [{}, {}]
 	for i in 12:
 		aimr.append([0, 0])
 	for r in results:
@@ -70,6 +72,13 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 				var dp := String(m.get("death_part", ""))
 				dp = "head/heart" if dp == "head" or dp == "heart" else ("limb" if dp.begins_with("arm") or dp.begins_with("leg") else dp)
 				deaths[dp] = int(deaths.get(dp, 0)) + 1
+			for k in ["blocks", "parries", "dodges", "jumps", "stars", "star_hits"]:
+				melee[t][k] += int(m.get(k, 0))
+			melee[t]["hits"] += int(m.get("melee_hits", 0))
+			melee[t]["kills"] += int(m.get("melee_kills", 0))
+			var rr: Dictionary = m.get("rules", {})
+			for k in rr:
+				rules[t][k] = int(rules[t].get(k, 0)) + int(rr[k])
 			for w in m.get("wounds", []):
 				wounds[w] = int(wounds.get(w, 0)) + 1
 			var ar: Array = m.get("aimr", [])
@@ -89,8 +98,9 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 	var last: Dictionary = results[-1] if results.size() > 0 else {}
 	var docs: Array = last.get("doctrines", ["?", "?"])
 	var pres: Array = last.get("presets", ["?", "?"])
-	var txt := "Batch of %d: Outlaws(%s/%s) %d, Law(%s/%s) %d, draws %d, avg %ds, first blood avg %ds. " % [
-		results.size(), docs[0], pres[0], wins[0], docs[1], pres[1], wins[1], draws, int(dur / n), int(fb / n)]
+	var tn: Array = last.get("team_names", ["Red", "Blue"])
+	var txt := "Batch of %d on %s: %s(%s/%s x%d %s) %d, %s(%s/%s x%d %s) %d, draws %d, avg %ds, first blood avg %ds. " % [
+		results.size(), String(last.get("map", "?")), tn[0], docs[0], pres[0], int(last.get("sizes", [5, 5])[0]), String(last.get("grades", ["?", "?"])[0]), wins[0], tn[1], docs[1], pres[1], int(last.get("sizes", [5, 5])[1]), String(last.get("grades", ["?", "?"])[1]), wins[1], draws, int(dur / n), int(fb / n)]
 	var rs := PackedStringArray()
 	for k in reasons:
 		rs.append("%s:%d" % [k, reasons[k]])
@@ -113,7 +123,7 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 		var ms := PackedStringArray()
 		for k in modes[t]:
 			ms.append("%s %d%%" % [k, int(round(100.0 * float(modes[t][k]) / maxf(tot, 1.0)))])
-		txt += "%s modes: %s; per match cowers %.1f flanks %.1f hides %.1f rushes %.1f, ran dry %.1f men, jams %.1f (knocked %.1f), slips %.1f. " % [MatchManager.TEAM_NAMES[t], ", ".join(ms), events[t]["cowers"] / float(n0(results)), events[t]["flanks"] / float(n0(results)), events[t]["hides"] / float(n0(results)), events[t]["rushes"] / float(n0(results)), events[t]["dry"] / float(n0(results)), events[t].get("jams", 0) / float(n0(results)), events[t].get("gun_knocks", 0) / float(n0(results)), events[t].get("slips", 0) / float(n0(results))]
+		txt += "%s modes: %s; per match cowers %.1f flanks %.1f hides %.1f rushes %.1f, ran dry %.1f men, jams %.1f (knocked %.1f), slips %.1f. " % [String(tn[t]), ", ".join(ms), events[t]["cowers"] / float(n0(results)), events[t]["flanks"] / float(n0(results)), events[t]["hides"] / float(n0(results)), events[t]["rushes"] / float(n0(results)), events[t]["dry"] / float(n0(results)), events[t].get("jams", 0) / float(n0(results)), events[t].get("gun_knocks", 0) / float(n0(results)), events[t].get("slips", 0) / float(n0(results))]
 	var dps := PackedStringArray()
 	for k in deaths:
 		dps.append("%s %d" % [k, deaths[k]])
@@ -123,11 +133,13 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 		wps.append("%s %d" % [k, wounds[k]])
 	txt += "Wounds: " + ", ".join(wps) + ". "
 	for t in 2:
-		txt += "%s acc %d%% heads %d deny %d high %d fistkills %d flips %d ff %d. " % [MatchManager.TEAM_NAMES[t], int(100.0 * hits[t] / maxf(shots[t], 1)), heads[t], deny[t], high[t], fist_kills[t], flips[t], int(ff[t])]
+		txt += "%s melee hits %d kills %d, blocks %d parries %d dodges %d, jumps %d, stars %d/%d. " % [String(tn[t]), melee[t]["hits"], melee[t]["kills"], melee[t]["blocks"], melee[t]["parries"], melee[t]["dodges"], melee[t]["jumps"], melee[t]["star_hits"], melee[t]["stars"]]
+	for t in 2:
+		txt += "%s acc %d%% heads %d deny %d high %d fistkills %d flips %d ff %d. " % [String(tn[t]), int(100.0 * hits[t] / maxf(shots[t], 1)), heads[t], deny[t], high[t], fist_kills[t], flips[t], int(ff[t])]
 	return {"text": txt, "data": {"matches": results.size(), "wins": wins, "draws": draws, "avg_duration": dur / n,
 		"first_blood": fb / n, "reasons": reasons, "shots": shots, "hits": hits, "heads": heads, "kills": kills,
 		"fist_kills": fist_kills, "deny": deny, "high": high, "flips": flips, "ff": ff, "plans": plans,
-		"by_preset": by_preset, "doctrines": docs, "presets": pres, "modes": modes, "mode_events": events, "aimb": aimb, "aimr": aimr, "deaths": deaths, "wounds": wounds}}
+		"by_preset": by_preset, "doctrines": docs, "presets": pres, "modes": modes, "mode_events": events, "aimb": aimb, "aimr": aimr, "deaths": deaths, "wounds": wounds, "team_names": tn, "melee": melee, "rules": rules}}
 
 
 static func n0(results: Array) -> int:

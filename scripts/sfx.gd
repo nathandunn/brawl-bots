@@ -9,7 +9,7 @@ extends Node
 const RATE := 22050
 const VOICES := 20          # positional one-shots in flight at once
 const REPEAT_GAP := 0.045   # the same cue twice inside this window is a duplicate, not a sound
-const VOICE_LINES := ["got", "hit", "leg", "arm", "die", "out"]
+const VOICE_LINES := ["got", "hit", "leg", "arm", "die", "out", "kiai", "nhit", "ndie"]
 const VOICES_N := 3
 
 static var _mute := false
@@ -92,6 +92,7 @@ func _build_streams() -> void:
 	_streams["load"] = _load()
 	_streams["wood"] = _wood()
 	_streams["whiz"] = _whiz()
+	_streams["clang"] = _clang()
 	# the voices are the one thing not synthesised here: lines spoken by espeak-ng, baked once
 	# into res://sfx/voice (see tools/make_voices.sh) and loaded as ordinary streams
 	for line in VOICE_LINES:

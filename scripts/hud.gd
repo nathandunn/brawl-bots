@@ -8,6 +8,7 @@ signal new_match_requested
 signal batch_requested(n: int)
 signal speed_changed(scale: float)
 signal pause_toggled(paused: bool)
+signal map_changed(map_id: String)
 
 const TEAM_PRESETS: Array[String] = ["Balanced", "Gunslinger", "Sharpshooter", "Brawler", "Snake", "Lawman", "Coward", "Desperado", "Random", "Custom"]
 
@@ -35,10 +36,13 @@ var sliders := [{}, {}]
 var _updating := false
 var _tick := 0.0
 var _root: Control
+var _team_boxes: Array[VBoxContainer] = []
+var map_choice := "saloon"
 
 
-func setup(m: MatchManager) -> void:
+func setup(m: MatchManager, map_id := "saloon") -> void:
 	manager = m
+	map_choice = map_id
 	manager.announced.connect(_on_announce)
 	for t in 2:
 		manager.custom[t] = Personality.preset("Balanced")
@@ -75,7 +79,7 @@ func setup(m: MatchManager) -> void:
 	row1.add_child(timer_label)
 	for t in 2:
 		var l := Label.new()
-		l.add_theme_color_override("font_color", MatchManager.TEAM_COLORS[t].lightened(0.3))
+		l.add_theme_color_override("font_color", manager.team_colors[t].lightened(0.3))
 		l.add_theme_font_size_override("font_size", 17)
 		row1.add_child(l)
 		team_labels.append(l)
@@ -144,6 +148,7 @@ func setup(m: MatchManager) -> void:
 	status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(status_label)
 
+	_load_saved_scripts()
 	_build_setup()
 	_build_results()
 	get_tree().root.size_changed.connect(_relayout)
@@ -210,12 +215,35 @@ func _build_setup() -> void:
 	setup_overlay = parts[0]
 	setup_scroll = parts[1]
 	var content: VBoxContainer = parts[2]
-	content.add_child(_lbl("Every man has the same Colt (six rounds, 30 spare) and the same fists. What wins is the team's doctrine and each man's personality. Pick a doctrine and a personality for each side, or give single men their own. 'Custom' uses the sliders.", 13))
+	content.add_child(_lbl("Any side against any side, on any map. Damage is the same for everyone - a Super dies to one good slug or one clean cut like anybody else; he is just faster, jumps further and thinks better. Pick each side's faction, character, grade, numbers and plan; give single men their own; or write the side's AI as rules.", 13))
+	var mrow := HFlowContainer.new()
+	mrow.add_theme_constant_override("h_separation", 10)
+	content.add_child(mrow)
+	mrow.add_child(_key("Map", 15))
+	var mp := OptionButton.new()
+	var ids: Array[String] = []
+	for m in Saloon.MAPS:
+		mp.add_item(String(Saloon.MAP_TITLES[m]))
+		ids.append(m)
+	mp.add_item("Random each match")
+	ids.append("random")
+	mp.select(maxi(ids.find(map_choice), 0))
+	var mh := _lbl(String(Saloon.MAP_HELP.get(map_choice, "A different map every match")), 12, Color(0.8, 0.78, 0.72))
+	mp.item_selected.connect(func(i: int):
+		map_choice = ids[i]
+		mh.text = String(Saloon.MAP_HELP.get(map_choice, "A different map every match"))
+		map_changed.emit(map_choice))
+	mrow.add_child(mp)
+	content.add_child(mh)
 	var row := HFlowContainer.new()
 	row.add_theme_constant_override("h_separation", 24)
 	content.add_child(row)
 	for t in 2:
-		row.add_child(_team_panel(t))
+		var v := VBoxContainer.new()
+		v.custom_minimum_size = Vector2(340, 0)
+		row.add_child(v)
+		_team_boxes.append(v)
+		_fill_team(t)
 	var start := Button.new()
 	start.text = "Start a match with these teams"
 	start.add_theme_font_size_override("font_size", 18)
@@ -223,54 +251,134 @@ func _build_setup() -> void:
 	content.add_child(start)
 
 
-func _team_panel(t: int) -> Control:
-	var v := VBoxContainer.new()
-	v.custom_minimum_size = Vector2(380, 0)
-	v.add_child(_lbl(MatchManager.TEAM_NAMES[t] + (" - bandana masks, in by the swinging doors" if t == 0 else " - tin stars, in by the back door"), 18, MatchManager.TEAM_COLORS[t].lightened(0.3)))
-	v.add_child(_lbl("Doctrine", 14, Color(1, 0.85, 0.55)))
-	var dp := OptionButton.new()
-	for d in TeamBrain.DOCTRINES:
-		dp.add_item(d)
-	dp.select(TeamBrain.DOCTRINES.find(manager.doctrines[t]))
-	dp.item_selected.connect(func(i: int): manager.doctrines[t] = TeamBrain.DOCTRINES[i]; _refresh_help())
-	v.add_child(dp)
-	doc_pickers.append(dp)
-	var dh := _lbl("", 12, Color(0.8, 0.78, 0.72))
-	v.add_child(dh)
-	doc_help.append(dh)
-	v.add_child(_lbl("Team personality", 14, Color(1, 0.85, 0.55)))
-	var pp := OptionButton.new()
-	for pn in TEAM_PRESETS:
-		pp.add_item(pn)
-	pp.select(TEAM_PRESETS.find(manager.team_presets[t]))
-	pp.item_selected.connect(func(i: int): manager.team_presets[t] = TEAM_PRESETS[i]; _refresh_help())
-	v.add_child(pp)
-	preset_pickers.append(pp)
-	var ph := _lbl("", 12, Color(0.8, 0.78, 0.72))
-	v.add_child(ph)
-	preset_help.append(ph)
-	v.add_child(_lbl("Each man (Team = follow the team)", 14, Color(1, 0.85, 0.55)))
-	var men := HFlowContainer.new()
-	men.add_theme_constant_override("h_separation", 4)
-	v.add_child(men)
-	for i in MatchManager.TEAM_SIZE:
-		var mb := OptionButton.new()
-		mb.add_item("%s%d: Team" % [MatchManager.TEAM_NAMES[t][0], i + 1])
-		for pn in TEAM_PRESETS:
-			mb.add_item("%s%d: %s" % [MatchManager.TEAM_NAMES[t][0], i + 1, pn])
-		mb.item_selected.connect(func(k: int): manager.player_preset[t][i] = "" if k == 0 else TEAM_PRESETS[k - 1])
-		men.add_child(mb)
-		man_pickers[t].append(mb)
-	v.add_child(_lbl("Custom personality (dragging sets the team to Custom)", 13, Color(1, 0.85, 0.55)))
+## A short label that never wraps (for grids and rows; wrapping labels in a grid get squeezed
+## to nothing and stack their letters).
+func _key(text: String, size := 14, color := Color(1, 0.85, 0.55)) -> Label:
+	var l := _lbl(text, size, color)
+	l.autowrap_mode = TextServer.AUTOWRAP_OFF
+	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return l
+
+
+func _picker(items: Array, labels: Array, current: String, on_pick: Callable) -> OptionButton:
+	var ob := OptionButton.new()
+	for i in items.size():
+		ob.add_item(String(labels[i]))
+	ob.select(maxi(items.find(current), 0))
+	ob.item_selected.connect(func(i: int): on_pick.call(items[i]))
+	return ob
+
+
+## (Re)build one side's panel - called again whenever its faction or size changes.
+func _fill_team(t: int) -> void:
+	var v: VBoxContainer = _team_boxes[t]
+	for c in v.get_children():
+		v.remove_child(c)
+		c.queue_free()
+	sliders[t] = {}
+	manager.refresh_identity()
+	var fac := manager.factions[t]
+	var col: Color = manager.team_colors[t]
+	v.add_child(_lbl("%s side - %s" % ["West" if t == 0 else "East", manager.team_names[t]], 18, col.lightened(0.3)))
 	var grid := GridContainer.new()
 	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 8)
 	v.add_child(grid)
+	# faction
+	grid.add_child(_key("Faction"))
+	var fl: Array = []
+	for f in Roster.FACTION_ORDER:
+		fl.append(Roster.FACTIONS[f]["name"])
+	grid.add_child(_picker(Roster.FACTION_ORDER, fl, fac, func(f):
+		manager.set_faction(t, f)
+		_fill_team.call_deferred(t)
+		if t == 0 or manager.factions[0] == manager.factions[1]:
+			_fill_team.call_deferred(1 - t)))
+	# numbers
+	grid.add_child(_key("Fighters"))
+	var sb := SpinBox.new()
+	sb.min_value = 1
+	sb.max_value = MatchManager.MAX_TEAM
+	sb.value = manager.team_sizes[t]
+	sb.value_changed.connect(func(x: float):
+		manager.team_sizes[t] = int(x)
+		_fill_team.call_deferred(t))
+	grid.add_child(sb)
+	# character
+	var kinds: Array = Roster.kinds_for(fac).duplicate()
+	kinds.append("Random")
+	kinds.append("Custom")
+	grid.add_child(_key("Character"))
+	grid.add_child(_picker(kinds, kinds, manager.team_presets[t], func(k):
+		manager.team_presets[t] = k
+		_fill_team.call_deferred(t)))
+	# grade
+	var gl: Array = []
+	for g in Roster.GRADE_ORDER:
+		gl.append(Roster.grade_name(g, fac))
+	grid.add_child(_key("Grade"))
+	grid.add_child(_picker(Roster.GRADE_ORDER, gl, manager.team_grades[t], func(g):
+		manager.team_grades[t] = g
+		_fill_team.call_deferred(t)))
+	# plan
+	grid.add_child(_key("Plan"))
+	grid.add_child(_picker(TeamBrain.DOCTRINES, TeamBrain.DOCTRINES, manager.doctrines[t], func(d):
+		manager.doctrines[t] = d
+		_fill_team.call_deferred(t)))
+	var ab := Roster.abilities(manager.team_grades[t], manager.team_presets[t])
+	var kh := String(Personality.PRESET_HELP.get(manager.team_presets[t], "Your own mix from the sliders below" if manager.team_presets[t] == "Custom" else ""))
+	v.add_child(_lbl("%s. %s: speed %.2f, jump %.2f, smarts %.2f. %s" % [String(Roster.FACTIONS[fac]["blurb"]), Roster.grade_name(manager.team_grades[t], fac), ab["speed"], ab["jump"], ab["smarts"], kh], 12, Color(0.82, 0.8, 0.74)))
+	v.add_child(_lbl("Plan: " + String(TeamBrain.DOCTRINE_HELP.get(manager.doctrines[t], "")), 12, Color(0.82, 0.8, 0.74)))
+	# AI script
+	var srow := HFlowContainer.new()
+	srow.add_theme_constant_override("h_separation", 8)
+	v.add_child(srow)
+	var eb := Button.new()
+	eb.text = "Edit AI rules"
+	eb.tooltip_text = "Write this side's AI as rules: 'when bleeding and hp < 40 -> rush nearest'"
+	eb.pressed.connect(func(): _open_editor(t))
+	srow.add_child(eb)
+	var sc = manager.scripts[t]
+	var stxt := "Built-in brain only" if sc == null or (sc as AiScript).rules.is_empty() else "Running %d rule%s" % [(sc as AiScript).rules.size(), "" if (sc as AiScript).rules.size() == 1 else "s"]
+	srow.add_child(_key(stxt, 13, Color(0.6, 0.95, 0.6) if stxt.begins_with("Running") else Color(0.8, 0.78, 0.72)))
+	# per man
+	var n: int = manager.team_sizes[t]
+	v.add_child(_lbl("Each man (Team = as above)", 14, Color(1, 0.85, 0.55)))
+	var men := GridContainer.new()
+	men.columns = 2
+	v.add_child(men)
+	var letter := String(Roster.FACTIONS[fac]["letter"])
+	var mk: Array = [""]
+	var ml: Array = ["Team character"]
+	for k in Roster.kinds_for(fac):
+		mk.append(k)
+		ml.append(k)
+	var mg: Array = [""]
+	var mgl: Array = ["Team grade"]
+	for g in Roster.GRADE_ORDER:
+		mg.append(g)
+		mgl.append(Roster.grade_name(g, fac))
+	for i in n:
+		var ii := i
+		var cell := HBoxContainer.new()
+		cell.add_child(_key("%s%d" % [letter, i + 1], 13, col.lightened(0.3)))
+		cell.add_child(_picker(mk, ml, String(manager.player_preset[t][i]), func(k): manager.player_preset[t][ii] = k))
+		cell.add_child(_picker(mg, mgl, String(manager.player_grade[t][i]), func(g): manager.player_grade[t][ii] = g))
+		men.add_child(cell)
+	# custom temperament
+	v.add_child(_lbl("Custom temperament (dragging sets the side to Custom)", 13, Color(1, 0.85, 0.55)))
+	var sg := GridContainer.new()
+	sg.columns = 2
+	v.add_child(sg)
+	var base := Personality.preset(manager.team_presets[t]) if manager.team_presets[t] != "Custom" and manager.team_presets[t] != "Random" else (manager.custom[t] as Personality)
+	if manager.team_presets[t] != "Custom":
+		(manager.custom[t] as Personality).t = base.t.duplicate()
 	for k in Personality.TRAITS:
-		var kl := _lbl(k, 13)
+		var kl := _key(k, 13, Color(0.92, 0.88, 0.8))
 		kl.tooltip_text = String(Personality.TRAIT_HELP[k])
 		kl.mouse_filter = Control.MOUSE_FILTER_STOP
 		kl.custom_minimum_size = Vector2(90, 0)
-		grid.add_child(kl)
+		sg.add_child(kl)
 		var sl := HSlider.new()
 		sl.min_value = 0.0
 		sl.max_value = 1.0
@@ -280,31 +388,123 @@ func _team_panel(t: int) -> Control:
 		sl.value = (manager.custom[t] as Personality).g(k)
 		var key: String = k
 		sl.value_changed.connect(func(val: float):
-			if _updating:
-				return
 			(manager.custom[t] as Personality).t[key] = val
-			manager.team_presets[t] = "Custom"
-			preset_pickers[t].select(TEAM_PRESETS.find("Custom"))
-			_refresh_help())
-		grid.add_child(sl)
+			manager.team_presets[t] = "Custom")
+		sg.add_child(sl)
 		sliders[t][k] = sl
-	_refresh_help.call_deferred()
-	return v
 
 
-func _refresh_help() -> void:
-	for t in doc_help.size():
-		doc_help[t].text = String(TeamBrain.DOCTRINE_HELP.get(manager.doctrines[t], ""))
-		var pn := manager.team_presets[t]
-		preset_help[t].text = "Your own mix from the sliders below" if pn == "Custom" else String(Personality.PRESET_HELP.get(pn, ""))
-		# show the preset's numbers on the sliders so Custom starts from something sensible
-		if pn != "Custom" and pn != "Random" and t < sliders.size() and not sliders[t].is_empty():
-			_updating = true
-			var p := Personality.preset(pn)
-			(manager.custom[t] as Personality).t = p.t.duplicate()
-			for k in Personality.TRAITS:
-				sliders[t][k].value = p.g(k)
-			_updating = false
+# ---------------------------------------------------------------- the rule editor
+
+var _editor_team := -1
+var _gd_editor: Control
+var _gd_text: TextEdit
+var _gd_msg: Label
+
+
+func _load_saved_scripts() -> void:
+	if not OS.has_feature("web"):
+		return
+	for t in 2:
+		var raw = JavaScriptBridge.eval("(function(){try{return localStorage.getItem('brawlbots.rules.%d')||''}catch(e){return ''}})()" % t, true)
+		if raw != null and String(raw).strip_edges() != "":
+			_apply_script(t, String(raw), false)
+
+
+func _apply_script(t: int, text: String, save: bool) -> AiScript:
+	var sc := AiScript.parse(text)
+	manager.script_text[t] = text
+	manager.scripts[t] = sc if sc.errors.is_empty() and (sc.rules.size() > 0 or sc.trait_set.size() > 0 or sc.aim_mult != 1.0) else null
+	if save and OS.has_feature("web"):
+		JavaScriptBridge.eval("(function(){try{localStorage.setItem('brawlbots.rules.%d', %s)}catch(e){}})()" % [t, JSON.stringify(text)], true)
+	return sc
+
+
+func _open_editor(t: int) -> void:
+	_editor_team = t
+	var text: String = manager.script_text[t]
+	if text.strip_edges() == "":
+		text = String(AiScript.PRESETS["Built-in brain"])
+	var title := "AI rules - %s" % manager.team_names[t]
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval("window.brawlEditor && window.brawlEditor.open(%d, %s, %s, %s, %s)" % [t, JSON.stringify(title), JSON.stringify(text), JSON.stringify(AiScript.help_text()), JSON.stringify(AiScript.PRESETS)], true)
+		return
+	# desktop / native: an editor drawn in Godot
+	if _gd_editor == null:
+		var parts := _overlay("AI rules", func(): _editor_team = -1)
+		_gd_editor = parts[0]
+		var c: VBoxContainer = parts[2]
+		var prow := HFlowContainer.new()
+		c.add_child(prow)
+		prow.add_child(_key("Start from:", 13))
+		var pp := OptionButton.new()
+		for k in AiScript.PRESET_ORDER:
+			pp.add_item(k)
+		pp.item_selected.connect(func(i: int): _gd_text.text = String(AiScript.PRESETS[AiScript.PRESET_ORDER[i]]))
+		prow.add_child(pp)
+		_gd_text = TextEdit.new()
+		_gd_text.custom_minimum_size = Vector2(620, 300)
+		_gd_text.add_theme_font_size_override("font_size", 14)
+		c.add_child(_gd_text)
+		_gd_msg = _lbl("", 13, Color(1, 0.6, 0.5))
+		c.add_child(_gd_msg)
+		var brow := HFlowContainer.new()
+		c.add_child(brow)
+		var chk := Button.new()
+		chk.text = "Check"
+		chk.pressed.connect(func(): _gd_check(false))
+		brow.add_child(chk)
+		var ap := Button.new()
+		ap.text = "Apply to this side"
+		ap.pressed.connect(func(): _gd_check(true))
+		brow.add_child(ap)
+		var hl := _lbl(AiScript.help_text(), 11, Color(0.8, 0.8, 0.75))
+		hl.autowrap_mode = TextServer.AUTOWRAP_OFF
+		c.add_child(hl)
+	_gd_text.text = text
+	_gd_msg.text = ""
+	setup_overlay.visible = false
+	_gd_editor.visible = true
+
+
+func _gd_check(apply: bool) -> void:
+	var sc := AiScript.parse(_gd_text.text)
+	if sc.errors.size() > 0:
+		_gd_msg.add_theme_color_override("font_color", Color(1, 0.6, 0.5))
+		_gd_msg.text = "\n".join(sc.errors)
+		return
+	_gd_msg.add_theme_color_override("font_color", Color(0.6, 0.95, 0.6))
+	_gd_msg.text = "OK - %d rules%s" % [sc.rules.size(), "" if not apply else ", applied from the next match"]
+	if apply:
+		_apply_script(_editor_team, _gd_text.text, true)
+		_gd_editor.visible = false
+		setup_overlay.visible = true
+		_fill_team(_editor_team)
+
+
+## The web editor talks to us through a little queue on window.brawlEditor.
+func _poll_web_editor() -> void:
+	if not OS.has_feature("web"):
+		return
+	var raw = JavaScriptBridge.eval("window.brawlEditor ? window.brawlEditor.poll() : ''", true)
+	if raw == null or String(raw) == "":
+		return
+	var msg = JSON.parse_string(String(raw))
+	if typeof(msg) != TYPE_DICTIONARY:
+		return
+	var t := int(msg.get("team", 0))
+	var text := String(msg.get("text", ""))
+	var what := String(msg.get("action", ""))
+	if what == "cancel":
+		return
+	var sc := AiScript.parse(text)
+	var reply := {"ok": sc.errors.is_empty(), "errors": "\n".join(sc.errors), "summary": "OK - %d rules" % sc.rules.size(), "close": false}
+	if what == "apply" and sc.errors.is_empty():
+		_apply_script(t, text, true)
+		reply["close"] = true
+		reply["summary"] += ", applied from the next match"
+		_fill_team(t)
+	JavaScriptBridge.eval("window.brawlEditor.reply(%s)" % JSON.stringify(reply), true)
 
 
 func _build_results() -> void:
@@ -319,7 +519,7 @@ func on_match_started() -> void:
 	results_overlay.visible = false
 	for c in ticker.get_children():
 		c.queue_free()
-	status_label.text = "%s (%s) vs %s (%s)" % [manager.doctrines[0], manager.team_presets[0], manager.doctrines[1], manager.team_presets[1]]
+	status_label.text = "%s - %d %s %s (%s) vs %d %s %s (%s)" % [Saloon.MAP_TITLES.get(manager.saloon.map_id, ""), manager.team_sizes[0], Roster.grade_name(manager.team_grades[0], manager.factions[0]), manager.team_names[0], manager.doctrines[0], manager.team_sizes[1], Roster.grade_name(manager.team_grades[1], manager.factions[1]), manager.team_names[1], manager.doctrines[1]]
 
 
 func _close_overlays() -> void:
@@ -356,7 +556,7 @@ func set_status(text: String) -> void:
 
 
 func _on_announce(text: String, team: int) -> void:
-	var c: Color = Color(1, 0.9, 0.6) if team < 0 else MatchManager.TEAM_COLORS[team].lightened(0.35)
+	var c: Color = Color(1, 0.9, 0.6) if team < 0 else manager.team_colors[team].lightened(0.35)
 	var t := manager.elapsed
 	var l := _lbl("%d:%02d  %s" % [int(t) / 60, int(t) % 60, text], 13, c)
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -374,6 +574,7 @@ func _process(delta: float) -> void:
 	if _tick > 0.0 or manager == null:
 		return
 	_tick = 0.2
+	_poll_web_editor()
 	if manager.sudden_death:
 		timer_label.text = "SUDDEN DEATH +%d" % int(manager.sudden_t)
 		timer_label.add_theme_color_override("font_color", Color(1, 0.4, 0.3))
@@ -386,7 +587,8 @@ func _process(delta: float) -> void:
 		var plan := ""
 		if b != null:
 			plan = b.plan + ((" / " + b.phase) if b.phase != "" and b.phase != "hold" else "")
-		team_labels[t].text = "%s %d/5  [%s]" % [MatchManager.TEAM_NAMES[t], manager.alive_count(t), plan]
+		team_labels[t].text = "%s %d/%d  [%s]" % [manager.team_names[t], manager.alive_count(t), manager.team_sizes[t], plan]
+		team_labels[t].add_theme_color_override("font_color", manager.team_colors[t].lightened(0.3))
 
 
 # ---------------------------------------------------------------- results
@@ -446,9 +648,9 @@ func show_result(res: Dictionary) -> void:
 	setup_overlay.visible = false
 	setup_btn.set_pressed_no_signal(false)
 	var w: int = res["winner"]
-	results_title.text = MatchManager.TEAM_WINS[w] if w >= 0 else "A draw"
+	results_title.text = manager.team_wins[w] if w >= 0 else "A draw"
 	if w >= 0:
-		results_title.add_theme_color_override("font_color", MatchManager.TEAM_COLORS[w].lightened(0.35))
+		results_title.add_theme_color_override("font_color", manager.team_colors[w].lightened(0.35))
 	results_box.add_child(_lbl("%s after %d:%02d. Standing %d-%d. First blood at %ds." % [String(res["reason"]).capitalize(), int(res["duration"]) / 60, int(res["duration"]) % 60, res["alive"][0], res["alive"][1], int(maxf(res["first_blood"], 0.0))], 14))
 	for t in 2:
 		var pl: Dictionary = res["plans"][t]
@@ -456,31 +658,53 @@ func show_result(res: Dictionary) -> void:
 		for k in pl:
 			if String(k) != "" and float(pl[k]) >= 1.0:
 				parts.append("%s %ds" % [k, int(pl[k])])
-		results_box.add_child(_lbl("%s - %s / %s. Plans: %s" % [MatchManager.TEAM_NAMES[t], res["doctrines"][t], res["presets"][t], ", ".join(parts)], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
+		results_box.add_child(_lbl("%s - %s / %s. Plans: %s" % [manager.team_names[t], res["doctrines"][t], res["presets"][t], ", ".join(parts)], 13, manager.team_colors[t].lightened(0.35)))
 	_next_row()
-	var g := _grid(11)
-	for h in ["Man", "Kind", "Kills", "Shots", "Acc", "Avg aim", "Vital", "Fists", "Mostly", "Wounds", "Fate"]:
+	var g := _grid(13)
+	for h in ["Man", "Kind", "Grade", "Kills", "Shots", "Acc", "Avg aim", "Vital", "Melee", "Def", "Mostly", "Wounds", "Fate"]:
 		_cell(g, h, Color(1, 0.85, 0.55))
 	for m in res["men"]:
-		var col: Color = MatchManager.TEAM_COLORS[int(m["team"])].lightened(0.35)
+		var col: Color = manager.team_colors[int(m["team"])].lightened(0.35)
 		_cell(g, String(m["name"]), col)
 		_cell(g, String(m["preset"]))
+		_cell(g, Roster.grade_name(String(m.get("grade", "Regular")), String(m.get("faction", "outlaws"))))
 		_cell(g, str(m["kills"]))
-		_cell(g, "%d/18" % int(m["shots"]))
+		_cell(g, str(m["shots"]))
 		_cell(g, _pct(m["hits"], m["shots"]))
 		_cell(g, "%.2fs" % (float(m["aim_sum"]) / maxf(float(m["shots"]), 1.0)))
 		_cell(g, str(m["heads"]))
 		_cell(g, "%d/%d" % [m["punch_hits"], m["punches"]])
+		_cell(g, "%d/%d/%d" % [int(m.get("blocks", 0)), int(m.get("parries", 0)), int(m.get("dodges", 0))])
 		_cell(g, _top_modes(m.get("modes", {})))
 		_cell(g, _wound_text(m.get("wounds", [])))
 		_cell(g, _fate(m))
+	_rules_fired(res["men"])
 	results_box.add_child(_lbl("How it went", 15, Color(1, 0.85, 0.55)))
 	for e in res["events"]:
 		if not e[3]:
 			continue
-		var c: Color = MatchManager.TEAM_COLORS[int(e[1])].lightened(0.35)
+		var c: Color = manager.team_colors[int(e[1])].lightened(0.35)
 		results_box.add_child(_lbl("%d:%02d  %s" % [int(e[0]) / 60, int(e[0]) % 60, e[2]], 12, c))
 	results_overlay.visible = true
+
+
+## Which lines of each side's script actually decided things, and how often.
+func _rules_fired(men: Array) -> void:
+	for t in 2:
+		var tot := {}
+		for m in men:
+			if int(m["team"]) != t:
+				continue
+			var r: Dictionary = m.get("rules", {})
+			for k in r:
+				tot[k] = int(tot.get(k, 0)) + int(r[k])
+		if tot.is_empty():
+			continue
+		results_box.add_child(_lbl("%s's rules that decided (times):" % manager.team_names[t], 14, manager.team_colors[t].lightened(0.35)))
+		var ks := tot.keys()
+		ks.sort_custom(func(a, b): return int(String(a).split(":")[0].substr(1)) < int(String(b).split(":")[0].substr(1)))
+		for k in ks:
+			results_box.add_child(_lbl("   %5d  %s" % [tot[k], k], 12))
 
 
 func _top_modes(md: Dictionary) -> String:
@@ -526,9 +750,17 @@ func _fate(m: Dictionary) -> String:
 		"heart": how = "shot through the heart"
 		"bled out": how = "bled out from a gut shot"
 		"fists": how = "beaten to death"
+		"head_blunt": how = "skull broken"
 		"": how = "killed"
 		_: how = "shot in the %s" % String(MatchManager.PART_NAMES.get(dp, dp))
-	var by := " by %s" % String(m["killed_by"]) if dp != "bled out" else " (%s's bullet)" % String(m["killed_by"])
+	var dh := String(m.get("death_how", ""))
+	if dh == "blade" and dp != "bled out":
+		how = "cut down (%s)" % String(MatchManager.PART_NAMES.get(dp, dp))
+	elif dh == "star" and dp != "bled out":
+		how = "star in the %s" % String(MatchManager.PART_NAMES.get(dp, dp))
+	elif dh == "blunt" and dp != "head_blunt":
+		how = "beaten down"
+	var by := " by %s" % String(m["killed_by"]) if dp != "bled out" else " (wound from %s)" % String(m["killed_by"])
 	return "%s%s at %ds" % [how, by, int(m["died_at"])]
 
 
@@ -539,14 +771,15 @@ func show_batch(summary: Dictionary) -> void:
 	var d: Dictionary = summary["data"]
 	results_title.text = "Batch of %d" % d["matches"]
 	results_title.remove_theme_color_override("font_color")
-	results_box.add_child(_lbl("Outlaws (%s / %s) won %d, Law (%s / %s) won %d, %d drawn. Average match %ds, first blood at %ds." % [d["doctrines"][0], d["presets"][0], d["wins"][0], d["doctrines"][1], d["presets"][1], d["wins"][1], d["draws"], int(d["avg_duration"]), int(d["first_blood"])], 14))
+	var tn: Array = d.get("team_names", manager.team_names)
+	results_box.add_child(_lbl("%s (%s / %s) won %d, %s (%s / %s) won %d, %d drawn. Average match %ds, first blood at %ds." % [tn[0], d["doctrines"][0], d["presets"][0], d["wins"][0], tn[1], d["doctrines"][1], d["presets"][1], d["wins"][1], d["draws"], int(d["avg_duration"]), int(d["first_blood"])], 14))
 	var rs := PackedStringArray()
 	for k in d["reasons"]:
 		rs.append("%s %d" % [k, d["reasons"][k]])
 	results_box.add_child(_lbl("Endings: " + ", ".join(rs), 13))
 	_next_row()
 	var g := _grid(3)
-	for h in ["", "Outlaws", "Law"]:
+	for h in ["", String(tn[0]), String(tn[1])]:
 		_cell(g, h, Color(1, 0.85, 0.55))
 	var rows := [["Kills", "kills"], ["Shots", "shots"], ["Hits", "hits"], ["Head shots", "heads"], ["Hits on men in cover", "deny"], ["Hits from the balcony", "high"], ["Fist kills", "fist_kills"], ["Tables flipped", "flips"]]
 	for r in rows:
@@ -564,7 +797,7 @@ func show_batch(summary: Dictionary) -> void:
 		var parts := PackedStringArray()
 		for k in pl:
 			parts.append("%s %d%%" % [k, int(100.0 * float(pl[k]) / maxf(tot, 1.0))])
-		results_box.add_child(_lbl("%s time in each plan: %s" % [MatchManager.TEAM_NAMES[t], ", ".join(parts)], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
+		results_box.add_child(_lbl("%s time in each plan: %s" % [manager.team_names[t], ", ".join(parts)], 13, manager.team_colors[t].lightened(0.35)))
 	results_box.add_child(_lbl("Hit rate by time spent aiming (hits / shots)", 15, Color(1, 0.85, 0.55)))
 	var ag := _grid(5)
 	for hh in ["Range", "Snap <0.3s", "Quick 0.3-0.7s", "Steady 0.7-1.2s", "Careful >1.2s"]:
@@ -578,7 +811,7 @@ func show_batch(summary: Dictionary) -> void:
 	results_box.add_child(_lbl("Time in each mode", 15, Color(1, 0.85, 0.55)))
 	var me: Array = d.get("mode_events", [{}, {}])
 	for t in 2:
-		results_box.add_child(_lbl("%s: %s" % [MatchManager.TEAM_NAMES[t], _top_modes_all(d.get("modes", [{}, {}])[t])], 13, MatchManager.TEAM_COLORS[t].lightened(0.35)))
+		results_box.add_child(_lbl("%s: %s" % [manager.team_names[t], _top_modes_all(d.get("modes", [{}, {}])[t])], 13, manager.team_colors[t].lightened(0.35)))
 		var ev: Dictionary = me[t] if me.size() > t else {}
 		var n := maxf(float(d["matches"]), 1.0)
 		results_box.add_child(_lbl("   per match: %.1f cowered, %.1f hid, %.1f flanks, %.1f rushes, %.1f men ran dry, %.1f jams (%.1f knocked by a punch), %.1f slipped in blood" % [float(ev.get("cowers", 0)) / n, float(ev.get("hides", 0)) / n, float(ev.get("flanks", 0)) / n, float(ev.get("rushes", 0)) / n, float(ev.get("dry", 0)) / n, float(ev.get("jams", 0)) / n, float(ev.get("gun_knocks", 0)) / n, float(ev.get("slips", 0)) / n], 12))

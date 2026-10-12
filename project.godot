@@ -3,8 +3,8 @@ config_version=5
 
 [application]
 
-config/name="Saloon Bots"
-config/description="5v5 six-shooter saloon gunfight: team doctrines, flanking, high ground and shot-counting AI. Part of the Precog sim suite."
+config/name="Brawl Bots"
+config/description="Gunslingers and ninja clans on four maps: team plans, supers vs minions, and an AI you can rewrite as rules. Part of the Precog sim suite."
 run/main_scene="res://scenes/Main.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
 config/icon="res://icon.svg"

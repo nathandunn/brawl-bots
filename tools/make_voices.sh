@@ -18,6 +18,13 @@ for i in 0 1 2; do
   gen out_$i ${V[$i]} ${P[$i]} 170 "I'm out!"
 done
 gen draw en-us+m2 30 120 "Draw!"
+K=("Hai!" "Kiai!" "Yaah!")
+H=("Ugh!" "Argh!" "Hngh!")
+for i in 0 1 2; do
+  gen kiai_$i ${V[$i]} $((${P[$i]}+8)) 190 "${K[$i]}"
+  gen nhit_$i ${V[$i]} ${P[$i]} 170 "${H[$i]}"
+  gen ndie_$i ${V[$i]} $((${P[$i]}-10)) 100 "Aaaahh..."
+done
 # trim the silence, add a little grit, take the fizz off
 python3 - <<'PY'
 import wave, glob, array, math

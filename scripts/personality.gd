@@ -28,6 +28,12 @@ const PRESETS := {
 	"Lawman":      {"aggression": 0.5, "caution": 0.5, "patience": 0.6, "discipline": 0.95, "cunning": 0.4, "nerve": 0.8, "teamwork": 0.95, "height": 0.4, "brawl": 0.3, "trigger": 0.15},
 	"Coward":      {"aggression": 0.1, "caution": 0.95, "patience": 0.7, "discipline": 0.3, "cunning": 0.6, "nerve": 0.1, "teamwork": 0.2, "height": 0.6, "brawl": 0.05, "trigger": 0.5},
 	"Desperado":   {"aggression": 1.0, "caution": 0.05, "patience": 0.05, "discipline": 0.1, "cunning": 0.2, "nerve": 1.0, "teamwork": 0.1, "height": 0.2, "brawl": 0.7, "trigger": 0.9},
+	# ninja characters: "brawl" is their appetite for close work; "trigger" their quickness to throw
+	"Shinobi":     {"aggression": 0.55, "caution": 0.45, "patience": 0.6, "discipline": 0.7, "cunning": 0.7, "nerve": 0.7, "teamwork": 0.6, "height": 0.6, "brawl": 0.75, "trigger": 0.4},
+	"Kunoichi":    {"aggression": 0.6, "caution": 0.4, "patience": 0.45, "discipline": 0.55, "cunning": 0.8, "nerve": 0.65, "teamwork": 0.5, "height": 0.8, "brawl": 0.7, "trigger": 0.6},
+	"Monk":        {"aggression": 0.45, "caution": 0.55, "patience": 0.8, "discipline": 0.9, "cunning": 0.5, "nerve": 0.85, "teamwork": 0.8, "height": 0.3, "brawl": 0.85, "trigger": 0.1},
+	"Ronin":       {"aggression": 0.85, "caution": 0.15, "patience": 0.3, "discipline": 0.4, "cunning": 0.35, "nerve": 0.95, "teamwork": 0.2, "height": 0.2, "brawl": 0.95, "trigger": 0.3},
+	"Shadow":      {"aggression": 0.4, "caution": 0.6, "patience": 0.85, "discipline": 0.6, "cunning": 0.95, "nerve": 0.55, "teamwork": 0.3, "height": 0.7, "brawl": 0.6, "trigger": 0.5},
 }
 
 const PRESET_HELP := {
@@ -40,6 +46,11 @@ const PRESET_HELP := {
 	"Coward": "Hides, runs, and shoots you in the back if he gets the chance",
 	"Desperado": "All in, all the time",
 	"Random": "Every trait rolled fresh each match",
+	"Shinobi": "Katana and six throwing stars; the all-rounder",
+	"Kunoichi": "Nunchaku and ten stars; quick, and the best jumper",
+	"Monk": "Bo staff - longest reach, blocks well, sweeps legs",
+	"Ronin": "Katana, three stars, will not back down",
+	"Shadow": "Katana and a dozen stars; hard to spot while still",
 }
 
 const ORDER: Array[String] = ["Balanced", "Gunslinger", "Sharpshooter", "Brawler", "Snake", "Lawman", "Coward", "Desperado", "Random"]

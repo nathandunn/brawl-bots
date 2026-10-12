@@ -44,6 +44,24 @@ var saloon: Saloon
 var brain: TeamBrain
 var rng := RandomNumberGenerator.new()
 var team_color := Color.RED
+## who he is: faction (outlaws, law, lotus, dragon), family (west, ninja), character, grade
+var faction := "outlaws"
+var family := "west"
+var kind := "Balanced"
+var grade := "Regular"
+var gun := "colt"            # "colt" or "" (no gun)
+var melee := "fists"         # fists, katana, nunchaku, staff
+var loadout_stars := 0
+var stealth := false
+## abilities from his grade: skill, not armour
+var ab_speed := 1.0
+var ab_jump := 0.3
+var ab_smarts := 0.5
+var ab_aim := 1.0
+var jump_cls := 1
+## the rule script his side is running (null = the built-in brain only)
+var script_rules: AiScript = null
+var last_rule := ""
 
 # condition
 var hp := 100.0
@@ -61,6 +79,7 @@ var _drip_t := 0.0
 var _last_cell := Vector3i(9999, 0, 0)
 var _close_choice_t := 0.0
 var _close_fists := false     # at arm's length: decided to fight with fists rather than shoot
+var _riposte := false         # just turned a blow: the next one comes quicker
 var crouched := false
 var knocked_t := 0.0
 var stagger_t := 0.0
@@ -90,6 +109,14 @@ var holster := false
 # movement & intent
 var path := PackedVector3Array()
 var path_i := 0
+var path_ids := PackedInt64Array()
+# a jump / climb / drop in progress along a nav link
+var trav_t := -1.0
+var trav_dur := 0.0
+var trav_from := Vector3.ZERO
+var trav_to := Vector3.ZERO
+var trav_type := ""
+var trav_h := 0.0
 var goal_id := -1
 var goal_score := -INF
 var move_mode := "run"
@@ -124,6 +151,7 @@ var arm_l: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
 var gun_mi: MeshInstance3D
+var weapon_root: Node3D
 var flash_mi: MeshInstance3D
 var label: Label3D
 var mat_shirt: StandardMaterial3D
@@ -150,12 +178,21 @@ func _ready() -> void:
 	cs.shape = cap
 	cs.position = Vector3(0, H_STAND * 0.5, 0)
 	add_child(cs)
+	# what he carries and how good he is
+	if gun == "colt":
+		cylinder = CYL
+		spare = SPARE
+	else:
+		cylinder = loadout_stars
+		spare = 0
+	jump_cls = 0 if ab_jump < 0.25 else (1 if ab_jump < 0.8 else 2)
 	if not manager.headless:
 		_build_body()
 	stats = {"name": gm_name, "team": team, "preset": preset_name, "shots": 0, "hits": 0, "heads": 0, "dmg": 0.0, "kills": 0,
 		"punches": 0, "punch_hits": 0, "knockdowns": 0, "fist_kills": 0, "reloads": 0, "flips": 0, "deny_hits": 0,
 		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0,
-		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": "", "jams": 0, "slips": 0, "gun_knocks": 0, "bled": 0.0}
+		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": "", "jams": 0, "slips": 0, "gun_knocks": 0, "bled": 0.0,
+		"kind": kind, "grade": grade, "faction": faction, "jumps": 0, "blocks": 0, "parries": 0, "dodges": 0, "melee_hits": 0, "melee_kills": 0, "stars": 0, "star_hits": 0, "rules": {}}
 	for i in 12:
 		stats["aimr"].append([0, 0])
 	_last_pos = global_position
@@ -200,11 +237,11 @@ func _limb(pos: Vector3, length: float, r: float, m: Material, parent: Node3D) -
 
 
 func _build_body() -> void:
-	mat_shirt = _m(team_color)
-	mat_pants = _m(Color(0.22, 0.2, 0.25))
+	var ninja := family == "ninja"
+	mat_shirt = _m(team_color if not ninja else (Color(0.1, 0.09, 0.11) if faction == "lotus" else Color(0.5, 0.06, 0.06)))
+	mat_pants = _m(Color(0.22, 0.2, 0.25) if not ninja else mat_shirt.albedo_color.darkened(0.2))
 	mat_skin = _m(Color(0.86, 0.66, 0.5))
-	# outlaws in black hats, lawmen in pale ones
-	mat_hat = _m(Color(0.1, 0.09, 0.09) if team == 0 else Color(0.72, 0.62, 0.45))
+	mat_hat = _m(Color(0.1, 0.09, 0.09) if faction == "outlaws" else Color(0.72, 0.62, 0.45))
 	var vest := _m(Color(0.25, 0.17, 0.1))
 	body_root = Node3D.new()
 	add_child(body_root)
@@ -214,39 +251,58 @@ func _build_body() -> void:
 	upper.name = "upper"
 	body_root.add_child(upper)
 	torso_mi = _mesh_box(Vector3(0.5, 0.62, 0.3), Vector3(0, 1.17, 0), mat_shirt, upper)
-	_mesh_box(Vector3(0.52, 0.5, 0.06), Vector3(0, 1.2, -0.15), vest, upper)
-	_mesh_box(Vector3(0.52, 0.08, 0.32), Vector3(0, 0.9, 0), _m(Color(0.15, 0.1, 0.06)), upper)  # gun belt
 	var head := _mesh_box(Vector3(0.28, 0.3, 0.28), Vector3(0, 1.64, 0), mat_skin, upper)
 	var eye_m := _m(Color(0.08, 0.06, 0.05))
 	for ex in [-0.065, 0.065]:
 		_mesh_box(Vector3(0.045, 0.03, 0.01), Vector3(ex, 0.045, -0.142), eye_m, head)
-	if team == 0:
-		_bandana(head)
+	if ninja:
+		# the hood: garb-coloured all over the head, a slit of skin for the eyes
+		var hood := mat_shirt
+		_mesh_box(Vector3(0.31, 0.17, 0.31), Vector3(0, 0.08 + 0.06, 0), hood, head)      # crown
+		_mesh_box(Vector3(0.31, 0.15, 0.31), Vector3(0, -0.085, 0), hood, head)           # mask
+		var sash := _m(Color(0.55, 0.35, 0.8) if faction == "lotus" else Color(0.95, 0.72, 0.15))
+		_mesh_box(Vector3(0.53, 0.09, 0.33), Vector3(0, 0.92, 0), sash, upper)
+		var tail := _mesh_box(Vector3(0.07, 0.3, 0.03), Vector3(0.18, 0.78, 0.17), sash, upper)
+		tail.rotation.z = 0.25
+		_mesh_box(Vector3(0.33, 0.06, 0.06), Vector3(0, 0.055, 0.17), sash, head)          # hood knot band
+		if loadout_stars > 0:
+			for k in 3:
+				var st := _shuriken_mesh(0.05)
+				st.position = Vector3(-0.12 + k * 0.08, 0.92, -0.17)
+				upper.add_child(st)
 	else:
-		_tin_star(upper, Vector3(-0.13, 1.33, -0.19))
-	var brim := MeshInstance3D.new()
-	var bc := CylinderMesh.new()
-	bc.top_radius = 0.34
-	bc.bottom_radius = 0.34
-	bc.height = 0.03
-	bc.radial_segments = 14
-	brim.mesh = bc
-	brim.material_override = mat_hat
-	brim.position = Vector3(0, 0.17, 0)
-	head.add_child(brim)
-	var crown := MeshInstance3D.new()
-	var cc := CylinderMesh.new()
-	cc.top_radius = 0.14
-	cc.bottom_radius = 0.17
-	cc.height = 0.18
-	cc.radial_segments = 12
-	crown.mesh = cc
-	crown.material_override = mat_hat
-	crown.position = Vector3(0, 0.27, 0)
-	head.add_child(crown)
+		_mesh_box(Vector3(0.52, 0.5, 0.06), Vector3(0, 1.2, -0.15), vest, upper)
+		_mesh_box(Vector3(0.52, 0.08, 0.32), Vector3(0, 0.9, 0), _m(Color(0.15, 0.1, 0.06)), upper)  # gun belt
+		if faction == "outlaws":
+			_bandana(head)
+		else:
+			_tin_star(upper, Vector3(-0.13, 1.33, -0.19))
+		var brim := MeshInstance3D.new()
+		var bc := CylinderMesh.new()
+		bc.top_radius = 0.34
+		bc.bottom_radius = 0.34
+		bc.height = 0.03
+		bc.radial_segments = 14
+		brim.mesh = bc
+		brim.material_override = mat_hat
+		brim.position = Vector3(0, 0.17, 0)
+		head.add_child(brim)
+		var crown := MeshInstance3D.new()
+		var cc := CylinderMesh.new()
+		cc.top_radius = 0.14
+		cc.bottom_radius = 0.17
+		cc.height = 0.18
+		cc.radial_segments = 12
+		crown.mesh = cc
+		crown.material_override = mat_hat
+		crown.position = Vector3(0, 0.27, 0)
+		head.add_child(crown)
+	if grade == "Super":
+		# a super gets a thin gold line at the collar so you can pick him out of the crowd
+		_mesh_box(Vector3(0.52, 0.04, 0.32), Vector3(0, 1.47, 0), _m(Color(1.0, 0.82, 0.3), 0.3), upper)
 	arm_l = _limb(Vector3(-0.32, 1.44, 0), 0.6, 0.08, mat_shirt, upper)
 	arm_r = _limb(Vector3(0.32, 1.44, 0), 0.6, 0.08, mat_shirt, upper)
-	gun_mi = _mesh_box(Vector3(0.06, 0.12, 0.3), Vector3(0, -0.62, -0.1), _m(Color(0.15, 0.15, 0.17), 0.35), arm_r)
+	_build_weapon()
 	flash_mi = MeshInstance3D.new()
 	var fm := SphereMesh.new()
 	fm.radius = 0.12
@@ -269,6 +325,65 @@ func _build_body() -> void:
 	label.position = Vector3(0, 2.35, 0)
 	add_child(label)
 	_update_label()
+
+
+## What he carries in his right hand: a Colt, a katana, nunchaku or a bo staff.
+func _build_weapon() -> void:
+	var steel := _m(Color(0.82, 0.84, 0.88), 0.25)
+	var wood := _m(Color(0.45, 0.3, 0.16))
+	var dark := _m(Color(0.12, 0.1, 0.1))
+	weapon_root = Node3D.new()
+	weapon_root.position = Vector3(0, -0.6, 0)
+	arm_r.add_child(weapon_root)
+	if gun == "colt":
+		gun_mi = _mesh_box(Vector3(0.06, 0.12, 0.3), Vector3(0, -0.02, -0.1), _m(Color(0.15, 0.15, 0.17), 0.35), weapon_root)
+		return
+	match melee:
+		"katana":
+			gun_mi = _mesh_box(Vector3(0.035, 0.012, 0.85), Vector3(0, 0, -0.55), steel, weapon_root)
+			_mesh_box(Vector3(0.1, 0.03, 0.03), Vector3(0, 0, -0.12), dark, weapon_root)
+			_mesh_box(Vector3(0.04, 0.04, 0.24), Vector3(0, 0, 0.0), dark, weapon_root)
+		"nunchaku":
+			gun_mi = _mesh_box(Vector3(0.045, 0.045, 0.32), Vector3(0, 0, -0.05), wood, weapon_root)
+			var swing := _mesh_box(Vector3(0.045, 0.045, 0.32), Vector3(0, -0.2, -0.3), wood, weapon_root)
+			swing.rotation.x = 0.9
+			_mesh_box(Vector3(0.01, 0.01, 0.1), Vector3(0, -0.06, -0.24), steel, weapon_root)
+		"staff":
+			gun_mi = _mesh_box(Vector3(0.05, 0.05, 1.9), Vector3(0, 0, -0.3), wood, weapon_root)
+		_:
+			gun_mi = _mesh_box(Vector3(0.01, 0.01, 0.01), Vector3.ZERO, dark, weapon_root)
+
+
+static var _star_mat: StandardMaterial3D
+
+
+func _shuriken_mesh(r: float) -> MeshInstance3D:
+	if _star_mat == null:
+		_star_mat = StandardMaterial3D.new()
+		_star_mat.albedo_color = Color(0.75, 0.77, 0.82)
+		_star_mat.metallic = 0.3
+		_star_mat.roughness = 0.3
+		_star_mat.emission_enabled = true
+		_star_mat.emission = Color(0.3, 0.3, 0.33)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for k in 4:
+		var a := TAU * k / 4.0
+		var tip := Vector3(cos(a), 0, sin(a)) * r
+		var l := Vector3(cos(a + 0.5), 0, sin(a + 0.5)) * r * 0.3
+		var rr := Vector3(cos(a - 0.5), 0, sin(a - 0.5)) * r * 0.3
+		for f in [[Vector3.ZERO, rr, tip], [Vector3.ZERO, tip, l]]:
+			for v in f:
+				st.set_normal(Vector3.UP)
+				st.add_vertex(v)
+			for v in [f[0], f[2], f[1]]:
+				st.set_normal(Vector3.DOWN)
+				st.add_vertex(v)
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = _star_mat
+	mi.rotation.x = PI * 0.5
+	return mi
 
 
 ## An outlaw's mask: a kerchief over nose, mouth and chin, knotted behind, its point hanging
@@ -331,7 +446,14 @@ func _tin_star(parent: Node3D, at: Vector3) -> MeshInstance3D:
 func _update_label() -> void:
 	if label == null:
 		return
-	var ammo := "dry" if total_ammo() == 0 else "%d+%d" % [cylinder, spare]
+	var ammo := ""
+	if gun == "colt":
+		ammo = "dry" if total_ammo() == 0 else "%d+%d" % [cylinder, spare]
+	elif loadout_stars > 0:
+		ammo = "%d stars" % cylinder
+	if grade == "Super":
+		ammo += " *"
+
 	var txt := "%s %d  %s" % [gm_name, int(ceil(hp)), ammo]
 	var wl := PackedStringArray()
 	if legs_hit() == 2:
@@ -354,6 +476,9 @@ func _update_label() -> void:
 		var st := shown_stance()
 		if show_intent:
 			txt += "\n" + st.to_upper() + ("" if mode == st or mode == "" else " - " + mode)
+			if last_rule != "":
+				txt += "\n[" + last_rule + "]"
+
 		elif st in ["cower", "hide", "flank", "rush", "duck"]:
 			txt += "\n" + st.to_upper()
 	if reloading:
@@ -393,6 +518,28 @@ func can_punch() -> bool:
 
 func punch_power() -> float:
 	return 1.0 if arms_hit() == 0 else 0.4
+
+
+func weapon() -> Dictionary:
+	return Roster.WEAPONS.get(melee, Roster.WEAPONS["fists"])
+
+
+func reach() -> float:
+	return float(weapon()["reach"])
+
+
+## A ninja with a blade or staff closes in to fight; a gunman shoots and punches when he must.
+func melee_first() -> bool:
+	return gun == "" and melee != "fists"
+
+
+func throws_stars() -> bool:
+	return gun == "" and loadout_stars > 0
+
+
+## Rounds or stars he started with - what "dry" means for him.
+func total_rounds() -> int:
+	return TOTAL if gun == "colt" else maxi(loadout_stars, 1)
 
 
 func total_ammo() -> int:
@@ -444,7 +591,7 @@ func is_moving() -> bool:
 
 
 func level() -> int:
-	return 1 if global_position.y > 2.6 else (2 if global_position.y > 0.4 else 0)
+	return 1 if global_position.y > Saloon.HIGH_Y else (2 if global_position.y > 0.4 else 0)
 
 
 func face_toward(p: Vector3, delta: float, rate := 10.0) -> void:
@@ -527,14 +674,18 @@ func _physics_process(delta: float) -> void:
 
 	sense_t -= delta
 	if sense_t <= 0.0:
-		sense_t = 0.18 + rng.randf() * 0.06
+		sense_t = lerpf(0.28, 0.12, ab_smarts) + rng.randf() * 0.06
 		_sense()
 	decide_t -= delta
 	if decide_t <= 0.0:
-		decide_t = 0.45 + rng.randf() * 0.25
+		decide_t = lerpf(0.75, 0.28, ab_smarts) + rng.randf() * 0.2
 		_decide()
 		_update_label()
 
+	if trav_t >= 0.0:
+		_traverse(delta)
+		_pose(delta)
+		return
 	_move(delta)
 	_fight(delta)
 	_pose(delta)
@@ -571,11 +722,217 @@ func _alerted() -> bool:
 	return suppression > 0.2 or manager.elapsed - last_hurt_t < 2.0
 
 
+# ---------------------------------------------------------------- the rule script
+
+## What a rule condition sees. Everything here is something the man could know.
+func rule_value(name: String) -> Variant:
+	match name:
+		"bleeding": return bleed > 0.0
+		"reloading": return reloading
+		"jammed": return jammed
+		"dry": return total_ammo() == 0 and not reloading
+		"wounded": return stats["wounds"].size() > 0
+		"leg_hit": return legs_hit() > 0
+		"arm_hit": return arms_hit() > 0
+		"pinned": return suppression > 0.75
+		"alone":
+			for m in brain.members:
+				if m != self and m.alive and m.global_position.distance_to(global_position) < 8.0:
+					return false
+			return true
+		"aimed_at":
+			for e in visible_enemies:
+				if is_instance_valid(e) and e.alive and e.aim_target == self:
+					return true
+			return false
+		"enemy_seen": return visible_enemies.size() > 0
+		"enemy_reloading": return brain.empty_contact_near(global_position, 15.0) != null
+		"enemy_dry":
+			for e in brain.contacts:
+				if is_instance_valid(e) and e.alive and brain.is_dry_est(e):
+					return true
+			return false
+		"enemy_high":
+			for e in brain.contacts:
+				if is_instance_valid(e) and e.alive and float(brain.contacts[e]["pos"].y) > Saloon.HIGH_Y:
+					return true
+			return false
+		"enemy_melee":
+			var ne := brain.best_contact_for(self, false)
+			return ne != null and ne.melee_first()
+		"high": return level() == 1
+		"in_cover": return _in_cover()
+		"mate_down": return manager.elapsed - brain.mate_down_t < 5.0 and brain.mate_down_pos.distance_to(global_position) < 6.0
+		"stalemate": return manager.elapsed - brain.last_action_t() > 5.0
+		"outnumbered": return manager.alive_count(team) < manager.alive_count(1 - team)
+		"ahead": return manager.alive_count(team) > manager.alive_count(1 - team)
+		"even": return manager.alive_count(team) == manager.alive_count(1 - team)
+		"sudden_death": return manager.sudden_death
+		"super": return grade == "Super"
+		"minion": return grade == "Minion"
+		"melee": return melee_first()
+		"gunman": return gun == "colt"
+		"ninja": return family == "ninja"
+		"has_stars": return gun == "" and cylinder > 0
+		"in_reach": return _nearest_enemy_alive(reach() + 0.2) != null
+		"hp": return hp
+		"bleed_secs": return hp / bleed if bleed > 0.0 else 999.0
+		"ammo": return total_ammo()
+		"loaded": return cylinder
+		"mates": return manager.alive_count(team)
+		"foes": return manager.alive_count(1 - team)
+		"diff": return manager.alive_count(team) - manager.alive_count(1 - team)
+		"time": return 0.0 if manager.sudden_death else maxf(manager.time_left, 0.0)
+		"nearest":
+			var c := brain.best_contact_for(self, false)
+			return flat_dist(brain.contact_pos(c)) if c != null else 99.0
+		"seen": return visible_enemies.size()
+		"suppression": return suppression
+		"random": return rng.randf() * 100.0
+		"speed": return ab_speed
+		"smarts": return ab_smarts
+	return false
+
+
+## Run the side's script. True if a rule decided what he does this time.
+func _run_script(o: Dictionary) -> bool:
+	if script_rules == null or script_rules.rules.is_empty():
+		last_rule = ""
+		return false
+	var tried: Array = []
+	for attempt in 4:
+		var r := script_rules.first_match(self, tried)
+		if r.is_empty():
+			last_rule = ""
+			return false
+		if String(r["action"]) == "default":
+			last_rule = "L%d default" % int(r["line"])
+			_count_rule(r)
+			return false
+		if _do_rule(r, o):
+			last_rule = "L%d %s" % [int(r["line"]), String(r["action"]) + (" " + String(r["arg"]) if String(r["arg"]) != "" else "")]
+			_count_rule(r)
+			return true
+		tried.append(r["line"])   # couldn't do it: the next rule gets a go
+	return false
+
+
+func _count_rule(r: Dictionary) -> void:
+	var k := "L%d: %s" % [int(r["line"]), String(r["text"])]
+	stats["rules"][k] = int(stats["rules"].get(k, 0)) + 1
+
+
+func _do_rule(r: Dictionary, o: Dictionary) -> bool:
+	var lock := float(r["lock"])
+	var tag := "rule L%d" % int(r["line"])
+	match String(r["action"]):
+		"hold":
+			var oo := o.duplicate()
+			oo["role"] = "hold"
+			oo["push"] = minf(float(o.get("push", 0.0)), -0.3)
+			_choose_spot(oo)
+			stance = "hold"
+			stance_lock = lock
+			mode = tag
+			return true
+		"advance":
+			var oo := o.duplicate()
+			oo["role"] = "push"
+			oo["push"] = 1.0
+			_choose_spot(oo)
+			stance = "advance"
+			stance_lock = lock
+			mode = tag
+			return true
+		"hide":
+			if brain.threat_count() == 0:
+				return false
+			_enter("hide", tag, lock if lock > 0.0 else 2.0)
+			_go_hide()
+			return true
+		"cower":
+			_enter("cower", tag, lock if lock > 0.0 else 2.0)
+			_stop()
+			return true
+		"flank":
+			if brain.flanker != null and brain.flanker != self or legs_hit() > 0:
+				return false
+			var fg := _pick_flank_spot()
+			if fg < 0:
+				return false
+			brain.flanker = self
+			flank_goal = fg
+			stats["flanks"] += 1
+			_enter("flank", tag, lock if lock > 0.0 else 12.0)
+			move_mode = "run"
+			_go_to(fg, 99.0)
+			return true
+		"rush":
+			var t := _rule_target(String(r["arg"]))
+			if t == null or legs_hit() > 0:
+				return false
+			focus = t
+			_enter("rush", tag, lock if lock > 0.0 else 2.0)
+			_charge(t)
+			return true
+		"fall back":
+			_enter("fall back", tag, lock if lock > 0.0 else 1.5)
+			_go_fallback()
+			return true
+		"take high":
+			if level() == 1 or saloon.high_ids.is_empty():
+				return false
+			var hp_ := saloon.high_point(global_position.x, brain.side)
+			_enter("advance", tag, lock if lock > 0.0 else 2.0)
+			move_mode = "run"
+			_go_to(saloon.nearest_node(hp_), 50.0)
+			return true
+		"hunt":
+			_enter("hunt", tag, lock)
+			_go_to(saloon.nearest_node(brain.enemy_home()), 0.0)
+			return true
+		"flip table":
+			var tb := saloon.table_near(global_position, 4.0)
+			if tb == null or brain.threat_count() == 0 or level() != 0:
+				return false
+			flip_table = tb
+			tb.claimed_by = self
+			_enter("advance", tag, 1.2)
+			move_mode = "sprint"
+			var threat := brain.threat_centroid()
+			path = PackedVector3Array([tb.position - flat(threat - tb.position).normalized() * 0.95])
+			path_ids = PackedInt64Array()
+			path_i = 0
+			goal_id = -1
+			return true
+	return false
+
+
+func _rule_target(which: String) -> Gunman:
+	var best: Gunman = null
+	var bs := INF
+	for e in brain.contacts:
+		if not is_instance_valid(e) or not e.alive:
+			continue
+		var d := flat_dist(brain.contact_pos(e))
+		var s := d
+		match which:
+			"weakest": s = e.hp + d * 0.5 if visible_enemies.has(e) else INF
+			"reloading": s = d if brain.is_empty_est(e) and d < 18.0 else INF
+			"high": s = d if float(brain.contacts[e]["pos"].y) > Saloon.HIGH_Y else INF
+			"aiming": s = d if e.aim_target == self and visible_enemies.has(e) else INF
+			"melee": s = d if e.melee_first() else INF
+		if s < bs:
+			bs = s
+			best = e
+	return best
+
+
 # ---------------------------------------------------------------- the brain
 
 func _decide() -> void:
 	var o := order()
-	var near := _nearest_enemy_alive(PUNCH_RANGE + 0.3)
+	var near := _nearest_enemy_alive(reach() + 0.3)
 	var contacts := brain.contacts
 	# --- a man in your face: fists, or back off if you can still shoot him. Even a cowering
 	# man fights when he's grabbed - fight or flight.
@@ -588,11 +945,18 @@ func _decide() -> void:
 			_enter("brawl", "fists up", 0.0)
 			_stop()
 		return
+	# --- the side's rule script gets first say (a cowering man isn't reading anything)
+	if not (stance == "cower" and stance_lock > 0.0):
+		var locked_rule := stance_lock > 0.0 and mode.begins_with("rule")
+		if not locked_rule and _run_script(o):
+			return
+		if locked_rule and _continue_stance(o):
+			return
 	# --- modes that hold a man until they run their course
 	if stance_lock > 0.0 and _continue_stance(o):
 		return
 	# --- the gun is empty for good: 18 rounds and that's your lot
-	if total_ammo() == 0 and not reloading:
+	if total_ammo() == 0 and not reloading and not melee_first():
 		if stats["dry_at"] < 0.0:
 			stats["dry_at"] = manager.elapsed
 			brain.log_event("%s is out of cartridges" % gm_name, false)
@@ -619,6 +983,14 @@ func _decide() -> void:
 		_enter("rush", "he's empty - go!", 3.0)
 		_charge(empty)
 		return
+	# --- a blade has to close: go for the nearest man in reach of a run
+	if melee_first() and legs_hit() == 0 and arms_hit() < 2:
+		var mt := _melee_target()
+		if mt != null:
+			focus = mt
+			_enter("rush", "closing in", 1.2)
+			_charge(mt)
+			return
 	# --- the doctrine says charge
 	if legs_hit() == 0 and String(o.get("role", "")) == "push" and float(o.get("push", 0.0)) >= 0.95 and String(o.get("move", "")) == "sprint" and contacts.size() > 0:
 		var tgt := brain.best_contact_for(self, true)
@@ -825,10 +1197,12 @@ func _go_to(id: int, score: float) -> void:
 	goal_id = id
 	goal_score = score
 	var stealthy := (p("cunning") > 0.55 or p("caution") > 0.7) and move_mode != "sprint"
-	path = saloon.path(team, global_position, id, stealthy)
+	var rt := saloon.route(team, global_position, id, stealthy, jump_cls if legs_hit() == 0 else 0)
+	path = rt["pts"]
+	path_ids = rt["ids"]
 	path_i = 0
 	# drop waypoints already behind us
-	while path_i < path.size() - 1 and flat_dist(path[path_i]) < 0.9:
+	while path_i < path.size() - 1 and flat_dist(path[path_i]) < 0.9 and _link_at(path_i) == "":
 		path_i += 1
 
 
@@ -844,11 +1218,23 @@ func _choose_spot(o: Dictionary) -> void:
 	var nthreat := brain.threat_count()
 	var wp := 0.5 + 1.2 * p("caution") + (0.35 if String(o.get("fire", "")) == "exposed_only" else 0.0)
 	var ws := 0.4 + 0.5 * p("aggression") + (0.6 * ob if role == "overwatch" or role == "high" else 0.0)
-	var wd := 0.25 + 1.3 * p("cunning") + (0.5 * ob if role == "flank" or role == "high" else 0.0)
+	var wd := 0.25 + 1.3 * p("cunning") + 0.6 * ab_smarts + (0.5 * ob if role == "flank" or role == "high" else 0.0)
 	var wa := 0.9 * p("aggression") - 0.6 * p("caution") + ob * push * 1.4
 	var wz := (1.3 * ob) if zone != Vector3.INF else 0.0
 	var wh := 0.9 * p("height") + (1.6 * ob if role == "high" or role == "overwatch_high" else 0.0) - (1.2 * ob if role == "ground" else 0.0)
 	var wdist := 0.6 + 0.4 * p("caution") - 0.3 * p("aggression")
+	if melee_first():
+		# a blade has to get there: close the distance, keep behind something on the way -
+		# and against guns, never across open floor: cover to cover, the smarter the safer
+		var guns := false
+		for e in brain.contacts:
+			if is_instance_valid(e) and e.alive and e.gun == "colt" and e.total_ammo() > 0:
+				guns = true
+				break
+		wa += 0.6 if guns else 1.3
+		ws *= 0.35 if not throws_stars() else 0.7
+		wp += (1.0 + 0.8 * ab_smarts) if guns else 0.4
+		wd *= 0.5
 	var best := -1
 	var best_s := -INF
 	var cur_s := -INF
@@ -881,7 +1267,7 @@ func _choose_spot(o: Dictionary) -> void:
 			s += 0.15
 		s -= 0.08 * p("teamwork") * maxf(0.0, Vector2(np.x - tc.x, np.z - tc.z).length() - 6.0)
 		s -= brain.crowding(id, self) * 0.7
-		s += rng.randf() * 0.12
+		s += rng.randf() * lerpf(0.3, 0.03, ab_smarts)
 		if id == goal_id:
 			cur_s = s + 0.25   # hysteresis: don't dither between two equal spots
 			s = cur_s
@@ -903,9 +1289,9 @@ func _choose_spot(o: Dictionary) -> void:
 func _role_label(role: String) -> String:
 	match role:
 		"hold": return "holding"
-		"guard": return "guarding stairs"
+		"guard": return "guarding the way up"
 		"ambush": return "lying in wait"
-		"high", "overwatch_high": return "taking the balcony"
+		"high", "overwatch_high": return "taking the high ground"
 		"overwatch": return "overwatch"
 		"flank": return "flanking"
 		"bound": return "bounding forward"
@@ -1021,6 +1407,7 @@ func _move(delta: float) -> void:
 	match move_mode:
 		"sprint": spd = SPRINT
 		"sneak": spd = SNEAK
+	spd *= ab_speed
 	if legs_hit() == 1:
 		spd = minf(spd, RUN) * 0.5    # a limp: no sprinting on that leg
 	elif legs_hit() == 2:
@@ -1046,6 +1433,11 @@ func _move(delta: float) -> void:
 			path_i += 1
 			if path_i >= path.size():
 				_arrived()
+			else:
+				var lt := _link_at(path_i - 1)
+				if lt != "":
+					_start_trav(lt, path[path_i])
+					return
 		else:
 			want = to.normalized() * spd
 	elif flip_table != null and path_i >= path.size():
@@ -1121,6 +1513,89 @@ func _check_slip() -> void:
 		knock_down(1.1)
 
 
+func _link_at(i: int) -> String:
+	if i < 0 or i + 1 >= path_ids.size():
+		return ""
+	return saloon.link_type(int(path_ids[i]), int(path_ids[i + 1]))
+
+
+## Vault, drop, hop, leap or climb along a nav link: a scripted arc, no walking physics.
+## A better jumper does it quicker; a ladder is the same slow climb for everyone.
+func _start_trav(t: String, to: Vector3) -> void:
+	trav_type = t
+	trav_from = global_position
+	trav_to = to + Vector3(0, 0.02, 0)
+	var d := Vector2(to.x - trav_from.x, to.z - trav_from.z).length()
+	var dy := to.y - trav_from.y
+	var nimble := (1.3 - 0.55 * ab_jump) / ab_speed
+	match t:
+		"vault":
+			trav_h = 0.9
+			trav_dur = (0.35 + d * 0.14) * nimble
+		"hop":
+			trav_h = 0.45
+			trav_dur = (0.35 + d * 0.1) * nimble
+		"drop":
+			trav_h = 0.35
+			trav_dur = (0.3 + sqrt(2.0 * maxf(-dy, 0.0) / 9.8)) * clampf(nimble, 0.8, 1.3)
+		"leap":
+			trav_h = 0.55
+			trav_dur = (0.55 + d * 0.08) * nimble
+		_:
+			trav_h = 0.0
+			trav_dur = (0.9 + absf(dy) * 0.35) / ab_speed
+	trav_t = 0.0
+	crouched = false
+	aim_target = null
+	velocity = Vector3.ZERO
+	collision_mask = 0
+	stats["jumps"] += 1
+	if t != "climb" and t != "climbdown":
+		manager.sound("swing", global_position + Vector3(0, 1.0, 0), 0.7, -10.0)
+	face_toward(to, 1.0, 1.0)
+
+
+func _traverse(delta: float) -> void:
+	trav_t += delta
+	var u := clampf(trav_t / maxf(trav_dur, 0.05), 0.0, 1.0)
+	var p: Vector3
+	if trav_type == "climb":
+		# up the ladder first, then step off onto the deck
+		var cu := clampf(u / 0.8, 0.0, 1.0)
+		var su := clampf((u - 0.8) / 0.2, 0.0, 1.0)
+		p = Vector3(trav_from.x, lerpf(trav_from.y, trav_to.y, cu), trav_from.z).lerp(trav_to, su)
+	elif trav_type == "climbdown":
+		var over := Vector3(trav_to.x, trav_from.y, trav_to.z)
+		if u < 0.2:
+			p = trav_from.lerp(over, u / 0.2)
+		else:
+			p = Vector3(trav_to.x, lerpf(trav_from.y, trav_to.y, (u - 0.2) / 0.8), trav_to.z)
+	elif trav_type == "drop":
+		p = trav_from.lerp(trav_to, u)
+		p.y = lerpf(trav_from.y, trav_to.y, u * u) + 4.0 * u * (1.0 - u) * trav_h
+	else:
+		# rise over the higher end by trav_h, a parabola through take-off and landing
+		p = trav_from.lerp(trav_to, u)
+		var top := maxf(trav_from.y, trav_to.y) + trav_h
+		var straight := lerpf(trav_from.y, trav_to.y, u)
+		var lift := 4.0 * u * (1.0 - u) * (top - (trav_from.y + trav_to.y) * 0.5)
+		p.y = straight + lift
+	global_position = p
+	if body_root != null:
+		body_root.rotation.x = -0.35 if trav_type in ["vault", "leap", "hop"] and u < 0.8 else 0.0
+	if u >= 1.0:
+		trav_t = -1.0
+		global_position = trav_to
+		collision_mask = Saloon.LAYER_WORLD | Saloon.LAYER_MEN | Saloon.LAYER_MOVE | Saloon.LAYER_SOFT
+		if body_root != null:
+			body_root.rotation.x = 0.0
+		if trav_type == "drop" and trav_from.y - trav_to.y > 2.0:
+			manager.sound("thud", global_position, 0.6, -6.0)
+		path_i += 1
+		if path_i >= path.size():
+			_arrived()
+
+
 func _arrived() -> void:
 	if move_mode == "sprint" and mode != "fists up" and mode != "punishing reload" and mode != "rushing reload":
 		move_mode = "run"
@@ -1155,8 +1630,8 @@ func _peeking() -> bool:
 
 func _fight(delta: float) -> void:
 	# --- fists in close
-	var near := _nearest_enemy_alive(PUNCH_RANGE)
-	var grappled := grappled_by != null and is_instance_valid(grappled_by) and grappled_by.alive and manager.elapsed - grappled_t < 1.0 and flat_dist(grappled_by.global_position) < PUNCH_RANGE + 0.3
+	var near := _nearest_enemy_alive(reach())
+	var grappled := grappled_by != null and is_instance_valid(grappled_by) and grappled_by.alive and manager.elapsed - grappled_t < 1.0 and flat_dist(grappled_by.global_position) < reach() + 0.3
 	if punch_wind >= 0.0:
 		punch_wind -= delta
 		if punch_wind < 0.0:
@@ -1170,15 +1645,24 @@ func _fight(delta: float) -> void:
 			_close_choice_t = 0.7
 			var their_gun_on_me := near.aim_target == self and not near.jammed and near.total_ammo() > 0
 			_close_fists = rng.randf() < 0.15 + 0.6 * p("brawl") + (0.2 if their_gun_on_me else 0.0) - 0.15 * p("trigger")
-		var want_fists := (grappled or cylinder == 0 or jammed or _close_fists or stagger_t > 0.0) and can_punch()
+		var want_fists := (melee_first() or grappled or cylinder == 0 or jammed or _close_fists or stagger_t > 0.0) and can_punch()
 		if want_fists:
 			aim_target = null
+			# he sees a blow coming: a cool swordsman keeps his guard up and lets it come
+			if melee_first() and near.punch_wind >= 0.0 and near.punch_target == self and float(weapon()["block"]) > 0.0:
+				if rng.randf() < 0.25 + 0.6 * ab_smarts:
+					punch_cd = maxf(punch_cd, near.punch_wind + 0.05)
+					return
 			if punch_cd <= 0.0 and facing(near.global_position, 0.3):
+				var w := weapon()
 				punch_target = near
-				punch_wind = 0.28
-				punch_cd = (0.7 - 0.15 * p("brawl")) * (1.0 if arms_hit() == 0 else 1.6)
+				punch_wind = float(w["wind"]) / ab_speed * (0.55 if _riposte else 1.0)
+				_riposte = false
+				punch_cd = (float(w["cd"]) - 0.15 * p("brawl")) * (1.0 if arms_hit() == 0 else 1.6) / ab_speed
 				stats["punches"] += 1
-				manager.sound("swing", global_position + Vector3(0, 1.4, 0), 1.0, -6.0)
+				manager.sound("swing", global_position + Vector3(0, 1.4, 0), 1.25 if melee == "nunchaku" else 1.0, -6.0)
+				if melee_first() and rng.randf() < 0.25:
+					say("kiai")
 			return
 	# --- a jammed gun: work it free
 	if jammed:
@@ -1201,7 +1685,7 @@ func _fight(delta: float) -> void:
 				reloading = false
 				brain.reload_done(self)
 			else:
-				reload_t = ROUND_LOAD * reload_penalty()
+				reload_t = ROUND_LOAD * reload_penalty() / ab_speed
 				# break off to shoot a man who has shown himself close
 				if cylinder >= 2 and _best_target() != null and flat_dist(_best_target().global_position) < 8.0 and p("aggression") > 0.4:
 					reloading = false
@@ -1264,7 +1748,7 @@ func _fight(delta: float) -> void:
 		if not reacquire:
 			consec = 0
 		var d := flat_dist(tgt.global_position)
-		fanning = wounds["arm_r"] == 0 and arms_hit() < 2 and (p("trigger") > 0.45 and d < 7.0 + 5.0 * p("trigger") or (p("trigger") > 0.8 and d < 14.0) or (stance == "rush" and d < 6.0 and p("trigger") > 0.25))
+		fanning = gun == "colt" and wounds["arm_r"] == 0 and arms_hit() < 2 and (p("trigger") > 0.45 and d < 7.0 + 5.0 * p("trigger") or (p("trigger") > 0.8 and d < 14.0) or (stance == "rush" and d < 6.0 and p("trigger") > 0.25))
 		# already pointed that way: a set man watching his lane, a man coming back up where he
 		# ducked, or a hider whose victim walked into him, starts with his aim half settled
 		rested = still_t > 0.8 and facing(tgt.global_position, 0.6)
@@ -1279,7 +1763,7 @@ func _fight(delta: float) -> void:
 	var rate := 1.0 - 0.4 * minf(suppression, 1.0)
 	if is_moving():
 		rate *= 0.45   # you can't settle a front sight at a run
-	aim_t += delta * rate
+	aim_t += delta * rate * ab_speed
 	if aim_t >= aim_need and cock_t <= 0.0:
 		_fire(tgt)
 
@@ -1305,7 +1789,13 @@ func _want_aim(tgt: Gunman) -> float:
 		t *= 1.3   # off hand: he knows he needs longer
 	if stance == "rush":
 		t *= 0.6
-	t *= 1.0 + 0.5 * (1.0 - float(total_ammo()) / TOTAL) * p("discipline")
+	if script_rules != null:
+		t *= script_rules.aim_mult
+	t *= 1.0 + 0.5 * (1.0 - float(total_ammo()) / total_rounds()) * p("discipline")
+	if gun == "":
+		t *= 0.6   # a star is thrown, not aimed down a barrel
+	# a cool head: takes his time when nobody's on him, gets it off when somebody is
+	t *= lerpf(1.0, 1.15, ab_smarts) if tgt.aim_target != self else lerpf(1.0, 0.8, ab_smarts)
 	return t
 
 
@@ -1321,7 +1811,7 @@ func _in_cover() -> bool:
 
 func _start_reload() -> void:
 	reloading = true
-	reload_t = (ROUND_LOAD + 0.25) * reload_penalty()   # flip the gate, punch the empties
+	reload_t = (ROUND_LOAD + 0.25) * reload_penalty() / ab_speed   # flip the gate, punch the empties
 	aim_target = null
 	stats["reloads"] += 1
 	brain.heard_reload(self)
@@ -1338,7 +1828,7 @@ func _best_target() -> Gunman:
 	var best: Gunman = null
 	var best_v := 0.0
 	var thr := 0.1 + 0.14 * p("patience") - 0.08 * p("aggression") + (0.15 if policy == "exposed_only" else 0.0) + (0.1 if moving and p("discipline") > 0.6 else 0.0)
-	thr += 0.15 * (1.0 - float(total_ammo()) / TOTAL) * p("discipline")
+	thr += 0.15 * (1.0 - float(total_ammo()) / total_rounds()) * p("discipline")
 	if policy == "hold_fire":
 		thr = 0.95
 	for e in visible_enemies:
@@ -1350,7 +1840,9 @@ func _best_target() -> Gunman:
 			continue
 		if _mate_in_lane(e):
 			continue
-		var pd := clampf(1.25 - d / 20.0, 0.15, 1.0) * expo
+		if gun == "" and d > 16.0:
+			continue
+		var pd := clampf(1.25 - d / (20.0 if gun == "colt" else 13.0), 0.15, 1.0) * expo
 		if moving:
 			pd *= 0.55 if move_mode != "sprint" else 0.35
 		if e.is_moving():
@@ -1431,8 +1923,8 @@ func _fire(tgt: Gunman) -> void:
 	crouched = false
 	# the hammer falls - and sometimes nothing happens. Fighting with a man at arm's length,
 	# hanging on your wrist, it happens a good deal more.
-	var scuffle := (grappled_by != null and is_instance_valid(grappled_by) and manager.elapsed - grappled_t < 1.2) or flat_dist(tgt.global_position) < PUNCH_RANGE
-	if rng.randf() < MISFIRE + (JAM_SCUFFLE if scuffle else 0.0):
+	var scuffle := (grappled_by != null and is_instance_valid(grappled_by) and manager.elapsed - grappled_t < 1.2) or flat_dist(tgt.global_position) < reach()
+	if gun == "colt" and rng.randf() < MISFIRE + (JAM_SCUFFLE if scuffle else 0.0):
 		_jam("misfire" if not scuffle else "jammed in the scuffle")
 		return
 	var sigma := BASE_SIGMA
@@ -1442,13 +1934,14 @@ func _fire(tgt: Gunman) -> void:
 		sigma *= 1.25
 	sigma *= 1.0 + suppression * 1.2
 	sigma *= gun_hand_penalty()
+	sigma /= ab_aim
 	var shot_aim := aim_t
 	if fanning:
 		sigma *= 3.0
 		shot_aim = 0.0
 	else:
 		sigma *= aim_spread(aim_t / (1.0 if wounds["arm_r"] == 0 else 1.7))
-	var res := manager.fire_bullet(self, _aim_point(tgt), sigma)
+	var res := manager.throw_star(self, _aim_point(tgt), sigma) if gun == "" else manager.fire_bullet(self, _aim_point(tgt), sigma)
 	cylinder -= 1
 	consec += 1
 	var b := 0
@@ -1463,7 +1956,9 @@ func _fire(tgt: Gunman) -> void:
 	if hit_m != null and (hit_m as Gunman).team != team:
 		stats["aimb"][b][1] += 1
 		stats["aimr"][rb * 4 + b][1] += 1
-	cock_t = FAN if fanning else COCK + 0.1 * (1.0 - p("trigger")) + (0.25 if wounds["arm_r"] > 0 else 0.0)
+	cock_t = (FAN if fanning else COCK + 0.1 * (1.0 - p("trigger")) + (0.25 if wounds["arm_r"] > 0 else 0.0)) / ab_speed
+	if gun == "":
+		cock_t = 0.45 / ab_speed
 	aim_t = 0.0 if fanning else aim_t * 0.4   # recoil: the sight comes back on, not all the way
 	peek_hold = 0.3 + 1.2 * p("nerve") * (1.0 - p("caution"))
 	_flash()
@@ -1501,7 +1996,7 @@ func _flash() -> void:
 
 func _jam(why: String) -> void:
 	jammed = true
-	jam_t = JAM_CLEAR * reload_penalty() * rng.randf_range(0.8, 1.3)
+	jam_t = JAM_CLEAR * reload_penalty() * rng.randf_range(0.8, 1.3) / ab_speed
 	aim_target = null
 	aim_t = 0.0
 	stats["jams"] += 1
@@ -1515,29 +2010,120 @@ func _punch_land() -> void:
 	punch_target = null
 	if e == null or not is_instance_valid(e) or not e.alive:
 		return
-	if flat_dist(e.global_position) > PUNCH_RANGE + 0.25 or not facing(e.global_position, 0.2):
+	if flat_dist(e.global_position) > reach() + 0.25 or not facing(e.global_position, 0.2):
 		return
-	# a punch seen coming can be slipped
-	if e.facing(global_position, 0.3) and e.rng.randf() < 0.15 + 0.15 * e.p("caution"):
-		return
+	var dir := flat(e.global_position - global_position).normalized()
+	# the other man's defence: he has to see it coming, and be free to act
+	if e.facing(global_position, 0.3) and e.knocked_t <= 0.0 and e.punch_wind < 0.0 and e.trav_t < 0.0 and e.stance != "cower":
+		var dodge := 0.06 + 0.2 * e.ab_jump * clampf(e.ab_speed / 1.2, 0.6, 1.2) + 0.08 * e.p("caution")
+		if e.legs_hit() > 0:
+			dodge *= 0.3
+		var block := float(e.weapon()["block"]) * (0.7 + 0.3 * e.ab_smarts) * (1.0 - 0.3 * ab_smarts) * (1.0 if e.arms_hit() == 0 else 0.35)
+		if rng.randf() < dodge:
+			e.stats["dodges"] += 1
+			e.velocity += dir * 3.5
+			manager.sound("swing", e.global_position + Vector3(0, 1.2, 0), 0.8, -8.0)
+			return
+		if rng.randf() < block:
+			e.stats["blocks"] += 1
+			e._riposte = true
+			e.punch_cd = minf(e.punch_cd, 0.05)
+			var steel: bool = melee == "katana" or e.melee == "katana"
+			manager.sound("clang" if steel else "thud", e.global_position + Vector3(0, 1.3, 0), rng.randf_range(0.9, 1.15), -2.0)
+			if rng.randf() < 0.12 + 0.35 * e.ab_smarts:
+				# a parry: his blow turned aside and him left open
+				e.stats["parries"] += 1
+				stagger_t = 0.45
+				punch_cd = maxf(punch_cd, 0.6)
+			return
 	stats["punch_hits"] += 1
-	var dmg := (10.0 + 4.0 * p("brawl")) * punch_power()
-	manager.sound("thud", e.global_position + Vector3(0, 1.4, 0))
 	e.grappled_by = self
 	e.grappled_t = manager.elapsed
 	e.stagger_t = 0.3
-	# a fist into a man who has his gun up: knock it aside, maybe jam it
+	# a blow into a man who has his gun up: knock it aside, maybe jam it
 	if (e.aim_target != null or e.peek_hold > 0.0) and not e.jammed and e.total_ammo() > 0:
 		e.aim_target = null
 		e.aim_t = 0.0
-		if rng.randf() < PUNCH_JAM * punch_power():
+		if e.gun == "colt" and rng.randf() < PUNCH_JAM * punch_power():
 			stats["gun_knocks"] += 1
 			e._jam("knocked")
-	var kd := rng.randf() < (0.14 + 0.18 * p("brawl")) * punch_power() + (0.25 if e.legs_hit() > 0 else 0.0)
-	e.take_damage(dmg, "fists", self, "fists", flat(e.global_position - global_position).normalized())
-	if kd and e.alive:
+	var w := weapon()
+	var kd := rng.randf() < float(w["kd"]) * punch_power() * (1.0 + 0.6 * p("brawl")) + (0.25 if e.legs_hit() > 0 else 0.0)
+	match melee:
+		"katana":
+			# where the cut lands: a better swordsman finds the throat and the heart more often
+			stats["melee_hits"] += 1
+			var vital := 0.07 + 0.1 * ab_smarts + 0.04 * p("brawl")
+			var r := rng.randf()
+			var part := "gut"
+			if r < vital * 0.6:
+				part = "head"
+			elif r < vital:
+				part = "heart"
+			elif r < vital + 0.34:
+				part = "gut"
+			elif r < vital + 0.58:
+				part = "arm_r" if rng.randf() < 0.5 else "arm_l"
+			else:
+				part = "leg_r" if rng.randf() < 0.5 else "leg_l"
+			var dmg: float = {"head": 999.0, "heart": 999.0, "gut": 24.0}.get(part, 12.0) * punch_power()
+			manager.sound("thud", e.global_position + Vector3(0, 1.3, 0), 1.4, -2.0)
+			e.take_damage(dmg, "blade", self, part, dir)
+		"nunchaku", "staff":
+			stats["melee_hits"] += 1
+			var r := rng.randf()
+			var legs := 0.3 if melee == "staff" else 0.18
+			var head_p := 0.28 if melee == "nunchaku" else 0.2
+			manager.sound("thud", e.global_position + Vector3(0, 1.3, 0), 1.15 if melee == "nunchaku" else 0.9)
+			if r < head_p:
+				e.take_damage(22.0 * punch_power(), "blunt", self, "head_blunt", dir)
+				if e.alive:
+					e.knock_down(1.5)   # rung like a bell
+				kd = false
+			elif r < head_p + legs:
+				var leg := "leg_r" if rng.randf() < 0.5 else "leg_l"
+				var broke := rng.randf() < 0.3 * punch_power()
+				e.take_damage(10.0 * punch_power(), "blunt", self, leg if broke else "bruise", dir)
+				kd = kd or melee == "staff"
+			elif r < head_p + legs + 0.15:
+				var arm := "arm_r" if rng.randf() < 0.5 else "arm_l"
+				var broke2 := rng.randf() < 0.3 * punch_power()
+				e.take_damage(10.0 * punch_power(), "blunt", self, arm if broke2 else "bruise", dir)
+			else:
+				e.take_damage(float(w["dmg"]) * punch_power(), "blunt", self, "bruise", dir)
+		_:
+			var dmg2 := (10.0 + 4.0 * p("brawl")) * punch_power()
+			manager.sound("thud", e.global_position + Vector3(0, 1.4, 0))
+			e.take_damage(dmg2, "fists", self, "fists", dir)
+	if kd and e.alive and e.knocked_t <= 0.0:
 		stats["knockdowns"] += 1
 		e.knock_down(1.3)
+
+
+## Who a blade-man goes for: the nearest enemy he can see, if he's close enough to be worth the
+## run. A cautious man won't run at a loaded gun pointed at him from across the room - he works
+## round through cover instead.
+func _melee_target() -> Gunman:
+	var best: Gunman = null
+	var bd := 5.5 + 5.0 * p("aggression") + 2.0 * ab_speed
+	for e in visible_enemies:
+		if not is_instance_valid(e) or not e.alive:
+			continue
+		var d := flat_dist(e.global_position) + absf(e.global_position.y - global_position.y) * 2.0
+		if d > bd:
+			continue
+		# a loaded gun watching him across open floor is death; wait for it to look away, run
+		# dry, reload or jam - or get so close he can reach it first
+		var guns_on := 0
+		for o in visible_enemies:
+			if is_instance_valid(o) and o.alive and o.gun == "colt" and o.cylinder > 0 and not o.reloading and not o.jammed and o.facing(global_position, 0.5):
+				guns_on += 1
+		var reach_first := 3.0 + 2.0 * ab_speed * (1.0 - 0.6 * ab_smarts) + 2.0 * p("aggression") * (1.0 - ab_smarts)
+		if guns_on > 0 and d > reach_first:
+			continue
+		bd = d
+		best = e
+	return best
 
 
 # ---------------------------------------------------------------- getting hurt
@@ -1557,26 +2143,31 @@ func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vect
 		wounds[part] += 1
 		stats["wounds"].append(part)
 		_wound_visual(part)
-		bleed += float(BLEED.get(part, 1.2))
-		bleed_by = by
+		if how != "blunt":
+			bleed += float(BLEED.get(part, 1.2))
+			bleed_by = by
 		if manager.blood != null:
 			manager.blood.pour(global_position + flat(dir) * 0.6, 1.2)   # the spray
 		if part.begins_with("leg") and legs_hit() == 2:
 			brain.log_event("%s is down on the floor - both legs" % gm_name, true)
 	suppression = minf(1.5, suppression + 0.5)
 	_hurt_flash()
-	if how == "gun":
+	if how == "gun" or how == "blade" or how == "star":
 		manager.spray(global_position + Vector3(0, height() * 0.7, 0), dir)
+	if how == "star" and part != "head" and part != "heart" and not wounds.has(part):
+		bleed += 0.5   # a star in the flesh bleeds even where it hits nothing that matters
+		bleed_by = by
 	if hp <= 0.0:
 		hp = 0.0
-		stats["death_part"] = part
-		if how == "gun" and part != "head":
+		stats["death_part"] = part if how != "fists" else "fists"
+		stats["death_how"] = how
+		if how != "fists" and part != "head":
 			say("die")
 		_die(by, how, dir)
 	else:
 		decide_t = minf(decide_t, 0.05)
 		brain.member_hit(self, by)
-		if how == "gun":
+		if how != "fists":
 			say("leg" if part.begins_with("leg") else ("arm" if part.begins_with("arm") else ("got" if rng.randf() < 0.55 else "hit")))
 			_maybe_cower(0.55 + (0.35 if hp < 40.0 else 0.0))
 	_update_label()
@@ -1589,6 +2180,15 @@ func say(line: String) -> void:
 	if manager.elapsed - _voice_t < 1.2 and line != "die":
 		return
 	_voice_t = manager.elapsed
+	if family == "ninja":
+		# a ninja doesn't say "my leg" - he grunts, shouts as he strikes, and dies quietly
+		match line:
+			"kiai": line = "kiai"
+			"die": line = "ndie"
+			"out": return
+			_: line = "nhit"
+	elif line == "kiai":
+		return
 	manager.sfx.voice(line, voice_id, global_position + Vector3(0, 1.7, 0), voice_pitch)
 
 
@@ -1647,8 +2247,9 @@ func _hurt_flash() -> void:
 	if torso_mi == null:
 		return
 	var m := mat_shirt
+	var was := m.albedo_color
 	m.albedo_color = Color(1, 0.9, 0.9)
-	get_tree().create_timer(0.08).timeout.connect(func(): if is_instance_valid(self): m.albedo_color = team_color)
+	get_tree().create_timer(0.08).timeout.connect(func(): if is_instance_valid(self): m.albedo_color = was)
 
 
 func _die(by: Gunman, how: String, dir: Vector3) -> void:
@@ -1661,6 +2262,8 @@ func _die(by: Gunman, how: String, dir: Vector3) -> void:
 		by.stats["kills"] += 1
 		if how == "fists":
 			by.stats["fist_kills"] += 1
+		elif how == "blade" or how == "blunt":
+			by.stats["melee_kills"] += 1
 	collision_layer = 0
 	collision_mask = Saloon.LAYER_WORLD
 	if flip_table != null and flip_table.claimed_by == self:
@@ -1677,7 +2280,7 @@ func _spawn_ragdoll(impulse: Vector3) -> void:
 	ragdoll = Ragdoll.new()
 	get_parent().add_child(ragdoll)
 	ragdoll.build(global_transform, mat_shirt, mat_pants, mat_skin)
-	if ragdoll.bodies.has("head"):
+	if ragdoll.bodies.has("head") and family == "west":
 		var hat := MeshInstance3D.new()
 		var bc := CylinderMesh.new()
 		bc.top_radius = 0.3
@@ -1687,7 +2290,7 @@ func _spawn_ragdoll(impulse: Vector3) -> void:
 		hat.material_override = mat_hat
 		hat.position = Vector3(0, 0.2, 0)
 		(ragdoll.bodies["head"] as Node3D).add_child(hat)
-		if team == 0:
+		if faction == "outlaws":
 			_bandana(ragdoll.bodies["head"], 1.3)
 		elif ragdoll.bodies.has("torso"):
 			_tin_star(ragdoll.bodies["torso"], Vector3(-0.14, 0.15, -0.18))
@@ -1779,9 +2382,23 @@ func _pose(delta: float) -> void:
 			(side[1] as Node3D).rotation.x = lerpf((side[1] as Node3D).rotation.x, 0.05, clampf(delta * 6.0, 0, 1))
 			(side[1] as Node3D).rotation.z = lerpf((side[1] as Node3D).rotation.z, 0.12 * (1.0 if side[0] == "arm_l" else -1.0), clampf(delta * 6.0, 0, 1))
 	if gun_mi != null:
-		gun_mi.visible = total_ammo() > 0 or reloading
+		gun_mi.visible = gun == "" or total_ammo() > 0 or reloading
 	if punch_wind >= 0.0:
-		off_arm.rotation.x = 1.6
+		if melee_first():
+			# the weapon arm comes over: a cut, a whip of the chain, a thrust of the staff
+			var wu := 1.0 - clampf(punch_wind / maxf(float(weapon()["wind"]) / ab_speed, 0.05), 0.0, 1.0)
+			gun_arm.rotation.x = lerpf(2.8, 0.9, wu)
+			if melee == "staff":
+				off_arm.rotation.x = gun_arm.rotation.x
+		else:
+			off_arm.rotation.x = 1.6
+	elif melee_first() and weapon_root != null:
+		# blade up and ready when there's a fight on; low otherwise
+		var ready := stance in ["brawl", "rush"] or (focus != null and is_instance_valid(focus) and flat_dist(focus.global_position) < 5.0)
+		if aim_target == null:
+			gun_arm.rotation.x = lerpf(gun_arm.rotation.x, 1.1 if ready else 0.3, clampf(delta * 10.0, 0, 1))
+			if melee == "staff":
+				off_arm.rotation.x = lerpf(off_arm.rotation.x, 1.0 if ready else 0.4, clampf(delta * 10.0, 0, 1))
 
 
 func celebrate() -> void:

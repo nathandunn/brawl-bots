@@ -7,8 +7,8 @@
 		<meta name="mobile-web-app-capable" content="yes">
 		<meta name="apple-mobile-web-app-capable" content="yes">
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-		<meta name="description" content="Saloon Bots: 5v5 six-shooter saloon gunfight in Godot 4 - team doctrines, flanking, high ground and shot-counting. A personality-driven AI sim.">
-		<title>Saloon Bots</title>
+		<meta name="description" content="Brawl Bots: gunslingers and ninja clans fight it out on four maps - team plans, supers vs minions, and an AI you can rewrite as rules. Godot 4.">
+		<title>Brawl Bots</title>
 		<style>
 html, body, #canvas {
 	margin: 0;
@@ -116,6 +116,24 @@ body {
 	text-align: center;
 	z-index: 1;
 }
+
+/* the AI rules editor: a real textarea over the canvas, so phones get their own keyboard */
+#brawl-editor { position: fixed; inset: 0; display: none; z-index: 50; background: rgba(12,9,7,0.94); color: #eee3cf;
+	font: 14px/1.4 system-ui, sans-serif; padding: max(54px, env(safe-area-inset-top)) 14px 14px; box-sizing: border-box;
+	flex-direction: column; gap: 8px; touch-action: auto; }
+#brawl-editor.open { display: flex; }
+#brawl-editor h2 { margin: 0; font-size: 18px; color: #ffd98a; }
+#brawl-editor .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#brawl-editor textarea { flex: 1 1 auto; min-height: 30vh; width: 100%; box-sizing: border-box; background: #1b1511; color: #f4ead6;
+	border: 1px solid #7a5a34; border-radius: 6px; padding: 8px; font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace; resize: none; }
+#brawl-editor button, #brawl-editor select { background: #3a2a1a; color: #f4ead6; border: 1px solid #8a6a40; border-radius: 6px;
+	padding: 8px 12px; font-size: 15px; }
+#brawl-editor button.go { background: #4a6a2a; border-color: #8ab060; }
+#brawl-editor #be-msg { min-height: 1.2em; white-space: pre-wrap; font-size: 13px; }
+#brawl-editor #be-msg.bad { color: #ff9a80; }
+#brawl-editor #be-msg.good { color: #a6e88a; }
+#brawl-editor details { max-height: 32vh; overflow: auto; background: #15100c; border-radius: 6px; padding: 4px 8px; }
+#brawl-editor pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: #d9cfbb; }
 		</style>
 		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
 <link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
@@ -143,13 +161,56 @@ body {
 		<div id="status">
 			<img id="status-splash" class="show-image--true fullsize--true use-filter--true" src="index.png" alt="">
 			<progress id="status-progress"></progress>
-			<div id="status-loading">Loading Saloon Bots&#8230;</div>
+			<div id="status-loading">Loading Brawl Bots&#8230;</div>
 			<div id="status-notice"></div>
 		</div>
 
+		<div id="brawl-editor">
+			<h2 id="be-title">AI rules</h2>
+			<div class="row"><label>Start from: <select id="be-preset"></select></label></div>
+			<textarea id="be-text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+			<div id="be-msg"></div>
+			<div class="row">
+				<button id="be-check">Check</button>
+				<button id="be-apply" class="go">Apply to this side</button>
+				<button id="be-cancel">Cancel</button>
+			</div>
+			<details><summary>What can I write?</summary><pre id="be-help"></pre></details>
+		</div>
+		<script>
+		// The game asks us to open; we queue Check / Apply / Cancel for it to poll, and it replies.
+		window.brawlEditor = (function () {
+			var el = document.getElementById('brawl-editor'), ta = document.getElementById('be-text');
+			var msg = document.getElementById('be-msg'), sel = document.getElementById('be-preset');
+			var queue = [], team = 0, presets = {};
+			function send(action) { queue.push(JSON.stringify({action: action, team: team, text: ta.value})); }
+			document.getElementById('be-check').onclick = function () { msg.className = ''; msg.textContent = 'Checking...'; send('check'); };
+			document.getElementById('be-apply').onclick = function () { msg.className = ''; msg.textContent = 'Applying...'; send('apply'); };
+			document.getElementById('be-cancel').onclick = function () { el.classList.remove('open'); send('cancel'); };
+			sel.onchange = function () { if (presets[sel.value] !== undefined) { ta.value = presets[sel.value]; } };
+			['keydown', 'keyup', 'keypress'].forEach(function (k) { el.addEventListener(k, function (e) { e.stopPropagation(); }, true); });
+			return {
+				open: function (t, title, text, help, ps) {
+					team = t; presets = ps || {};
+					document.getElementById('be-title').textContent = title;
+					document.getElementById('be-help').textContent = help;
+					sel.innerHTML = '<option value="">(your rules)</option>';
+					Object.keys(presets).forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o); });
+					ta.value = text; msg.textContent = ''; msg.className = '';
+					el.classList.add('open'); setTimeout(function () { ta.focus(); }, 50);
+				},
+				poll: function () { return queue.length ? queue.shift() : ''; },
+				reply: function (r) {
+					msg.className = r.ok ? 'good' : 'bad';
+					msg.textContent = r.ok ? r.summary : r.errors;
+					if (r.close) { setTimeout(function () { el.classList.remove('open'); }, 700); }
+				}
+			};
+		})();
+		</script>
 		<script src="index.js"></script>
 		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":366676,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":480500,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
 
