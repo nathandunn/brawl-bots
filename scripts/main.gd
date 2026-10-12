@@ -12,6 +12,7 @@ var hud: Hud
 var headless := false
 var batch_left := 0
 var batch_results: Array[Dictionary] = []
+var _dump := false
 var _restart := -1.0
 var _base_seed := -1
 var _league: Array = []        # queue of [reddoc, bluedoc, red, blue, n]
@@ -28,6 +29,7 @@ var _args := {}
 
 func _ready() -> void:
 	var args := _parse_args(OS.get_cmdline_user_args())
+	_dump = args.has("dumpmen")
 	headless = (DisplayServer.get_name() == "headless" or args.has("sim") or args.has("league") or args.has("presets")) and not args.has("ui")
 	_args = args
 	_build_lighting()
@@ -284,6 +286,14 @@ func _on_match_ended(res: Dictionary) -> void:
 	if batch_left > 0:
 		batch_left -= 1
 		batch_results.append(res)
+		if headless and _dump:
+			for t in 2:
+				var a := {"shots": 0, "hits": 0, "aim": 0.0, "fan": 0, "mv": 0, "sup": 0.0, "sig": 0.0, "d": 0.0, "kills": 0}
+				for m in res["men"]:
+					if int(m["team"]) != t: continue
+					a["shots"] += int(m["shots"]); a["hits"] += int(m["hits"]); a["aim"] += float(m["aim_sum"])
+					a["fan"] += int(m.get("fan", 0)); a["mv"] += int(m.get("mv", 0)); a["sup"] += float(m.get("sup", 0.0)); a["sig"] += float(m.get("sig", 0.0)); a["d"] += float(m.get("dsum", 0.0)); a["kills"] += int(m["kills"])
+				print("DUMP t%d %s" % [t, JSON.stringify(a)])
 		if headless:
 			print("  match %d: %s by %s in %ds (alive %d-%d) plans R=%s B=%s" % [res["match"], res["winner_name"], res["reason"], int(res["duration"]), res["alive"][0], res["alive"][1], _plans_str(res["plans"][0]), _plans_str(res["plans"][1])])
 		if batch_left > 0:

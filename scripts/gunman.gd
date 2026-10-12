@@ -105,6 +105,18 @@ var punch_cd := 0.0
 var punch_wind := -1.0
 var punch_target: Gunman = null
 var holster := false
+# a bottle off the bar or a table: grab it, throw it, or break it over a head
+var has_bottle := false
+var grab_t := -1.0
+var throw_wind := -1.0
+var throw_target: Gunman = null
+var _bottle_cd := 0.0
+var bottle_mi: MeshInstance3D = null
+# going over the rail (or off a roof)
+var falling := false
+var fall_dead := false        # the hit killed him; the fall is only where he lands
+var fall_by: Gunman = null
+var fall_how := ""
 
 # movement & intent
 var path := PackedVector3Array()
@@ -192,7 +204,8 @@ func _ready() -> void:
 		"punches": 0, "punch_hits": 0, "knockdowns": 0, "fist_kills": 0, "reloads": 0, "flips": 0, "deny_hits": 0,
 		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0,
 		"modes": {}, "cowers": 0, "flanks": 0, "hides": 0, "rushes": 0, "aim_sum": 0.0, "aimb": [[0, 0], [0, 0], [0, 0], [0, 0]], "aimr": [], "dry_at": -1.0, "wounds": [], "death_part": "", "jams": 0, "slips": 0, "gun_knocks": 0, "bled": 0.0,
-		"kind": kind, "grade": grade, "faction": faction, "jumps": 0, "blocks": 0, "parries": 0, "dodges": 0, "melee_hits": 0, "melee_kills": 0, "stars": 0, "star_hits": 0, "rules": {}}
+		"kind": kind, "grade": grade, "faction": faction, "jumps": 0, "blocks": 0, "parries": 0, "dodges": 0, "melee_hits": 0, "melee_kills": 0, "stars": 0, "star_hits": 0, "rules": {},
+		"bottles": 0, "bottle_hits": 0, "falls": 0, "fall_kills": 0}
 	for i in 12:
 		stats["aimr"].append([0, 0])
 	_last_pos = global_position
@@ -453,6 +466,8 @@ func _update_label() -> void:
 		ammo = "%d stars" % cylinder
 	if grade == "Super":
 		ammo += " *"
+	if has_bottle:
+		ammo += " +bottle"
 
 	var txt := "%s %d  %s" % [gm_name, int(ceil(hp)), ammo]
 	var wl := PackedStringArray()
@@ -630,6 +645,9 @@ func _physics_process(delta: float) -> void:
 	if not manager.running:
 		velocity = Vector3.ZERO
 		return
+	if falling:
+		_traverse(delta)
+		return
 	if not is_on_floor():
 		velocity.y -= 18.0 * delta
 	else:
@@ -735,6 +753,9 @@ func rule_value(name: String) -> Variant:
 		"leg_hit": return legs_hit() > 0
 		"arm_hit": return arms_hit() > 0
 		"pinned": return suppression > 0.75
+		"has_bottle": return has_bottle
+		"near_bottle": return saloon.bottle_within(global_position, 7.0) != null
+		"edge": return global_position.y > 1.2 and not saloon.fall_edge(global_position, 1.2).is_empty()
 		"alone":
 			for m in brain.members:
 				if m != self and m.alive and m.global_position.distance_to(global_position) < 8.0:
@@ -891,6 +912,14 @@ func _do_rule(r: Dictionary, o: Dictionary) -> bool:
 			_enter("hunt", tag, lock)
 			_go_to(saloon.nearest_node(brain.enemy_home()), 0.0)
 			return true
+		"grab bottle":
+			if has_bottle:
+				return false
+			if saloon.bottle_near(global_position, 1.7) != null:
+				grab_t = 0.4 / ab_speed
+				_enter("hold", tag, 0.8)
+				return true
+			return _go_for_bottle(7.0)
 		"flip table":
 			var tb := saloon.table_near(global_position, 4.0)
 			if tb == null or brain.threat_count() == 0 or level() != 0:
@@ -962,6 +991,8 @@ func _decide() -> void:
 			brain.log_event("%s is out of cartridges" % gm_name, false)
 			say("out")
 		var c := brain.best_contact_for(self, true)
+		if not has_bottle and arms_hit() < 2 and _go_for_bottle(7.0):
+			return
 		if c != null and legs_hit() == 0 and can_punch() and (p("brawl") + p("aggression")) * 0.5 + 0.2 * p("nerve") > 0.42:
 			focus = c
 			_enter("rush", "fists only", 4.0)
@@ -1570,7 +1601,7 @@ func _traverse(delta: float) -> void:
 			p = trav_from.lerp(over, u / 0.2)
 		else:
 			p = Vector3(trav_to.x, lerpf(trav_from.y, trav_to.y, (u - 0.2) / 0.8), trav_to.z)
-	elif trav_type == "drop":
+	elif trav_type == "drop" or trav_type == "fall":
 		p = trav_from.lerp(trav_to, u)
 		p.y = lerpf(trav_from.y, trav_to.y, u * u) + 4.0 * u * (1.0 - u) * trav_h
 	else:
@@ -1581,6 +1612,13 @@ func _traverse(delta: float) -> void:
 		var lift := 4.0 * u * (1.0 - u) * (top - (trav_from.y + trav_to.y) * 0.5)
 		p.y = straight + lift
 	global_position = p
+	if trav_type == "fall":
+		if body_root != null:
+			body_root.rotation.x = lerpf(-0.3, -1.5, u)   # over he goes, head first
+			body_root.rotation.z = 0.5 * sin(u * 5.0)
+		if u >= 1.0:
+			_land_fall()
+		return
 	if body_root != null:
 		body_root.rotation.x = -0.35 if trav_type in ["vault", "leap", "hop"] and u < 0.8 else 0.0
 	if u >= 1.0:
@@ -1664,6 +1702,9 @@ func _fight(delta: float) -> void:
 				if melee_first() and rng.randf() < 0.25:
 					say("kiai")
 			return
+	# --- bottles: off the bar or a table, and at a man's head
+	if _bottle_step(delta):
+		return
 	# --- a jammed gun: work it free
 	if jammed:
 		aim_target = null
@@ -1842,7 +1883,7 @@ func _best_target() -> Gunman:
 			continue
 		if gun == "" and d > 16.0:
 			continue
-		var pd := clampf(1.25 - d / (20.0 if gun == "colt" else 13.0), 0.15, 1.0) * expo
+		var pd := clampf(1.25 - d / ((20.0 if gun == "colt" else 13.0) * (0.75 + 0.25 * ab_aim)), 0.15, 1.0) * expo
 		if moving:
 			pd *= 0.55 if move_mode != "sprint" else 0.35
 		if e.is_moving():
@@ -1929,15 +1970,22 @@ func _fire(tgt: Gunman) -> void:
 		return
 	var sigma := BASE_SIGMA
 	if is_moving():
-		sigma *= {"sprint": 2.8, "run": 2.0, "sneak": 1.5}.get(move_mode, 2.0)
+		# a cool hand shoots nearly as well on the move; a greenhorn sprays
+		var mv: float = {"sprint": 2.8, "run": 2.0, "sneak": 1.5}.get(move_mode, 2.0)
+		sigma *= 1.0 + (mv - 1.0) * (1.3 - ab_smarts)
 	if tgt.is_moving():
 		sigma *= 1.25
 	sigma *= 1.0 + suppression * 1.2
 	sigma *= gun_hand_penalty()
 	sigma /= ab_aim
 	var shot_aim := aim_t
+	stats["fan"] = int(stats.get("fan", 0)) + (1 if fanning else 0)
+	stats["mv"] = int(stats.get("mv", 0)) + (1 if is_moving() else 0)
+	stats["sup"] = float(stats.get("sup", 0.0)) + suppression
+	stats["sig"] = float(stats.get("sig", 0.0)) + sigma
+	stats["dsum"] = float(stats.get("dsum", 0.0)) + flat_dist(tgt.global_position)
 	if fanning:
-		sigma *= 3.0
+		sigma *= 3.0 - 1.2 * ab_smarts
 		shot_aim = 0.0
 	else:
 		sigma *= aim_spread(aim_t / (1.0 if wounds["arm_r"] == 0 else 1.7))
@@ -2077,7 +2125,7 @@ func _punch_land() -> void:
 			manager.sound("thud", e.global_position + Vector3(0, 1.3, 0), 1.15 if melee == "nunchaku" else 0.9)
 			if r < head_p:
 				e.take_damage(22.0 * punch_power(), "blunt", self, "head_blunt", dir)
-				if e.alive:
+				if e.alive and not e.falling:
 					e.knock_down(1.5)   # rung like a bell
 				kd = false
 			elif r < head_p + legs:
@@ -2091,11 +2139,21 @@ func _punch_land() -> void:
 				e.take_damage(10.0 * punch_power(), "blunt", self, arm if broke2 else "bruise", dir)
 			else:
 				e.take_damage(float(w["dmg"]) * punch_power(), "blunt", self, "bruise", dir)
+		_ when has_bottle:
+			# the bottle over his head
+			_drop_bottle()
+			stats["bottle_hits"] += 1
+			manager.sound("smash", e.global_position + Vector3(0, 1.7, 0))
+			manager.glass(e.global_position + Vector3(0, 1.7, 0))
+			e.take_damage(16.0 * punch_power(), "bottle", self, "head_blunt", dir)
+			if e.alive and e.knocked_t <= 0.0 and not e.falling:
+				e.knock_down(1.6)
+			kd = false
 		_:
 			var dmg2 := (10.0 + 4.0 * p("brawl")) * punch_power()
 			manager.sound("thud", e.global_position + Vector3(0, 1.4, 0))
 			e.take_damage(dmg2, "fists", self, "fists", dir)
-	if kd and e.alive and e.knocked_t <= 0.0:
+	if kd and e.alive and e.knocked_t <= 0.0 and not e.falling:
 		stats["knockdowns"] += 1
 		e.knock_down(1.3)
 
@@ -2126,10 +2184,254 @@ func _melee_target() -> Gunman:
 	return best
 
 
+# ---------------------------------------------------------------- bottles
+
+## Bottles are for a man whose Colt is empty or jammed, a ninja out of stars - or a brawler who
+## just fancies it. Returns true while the bottle has his hands.
+func _bottle_step(delta: float) -> bool:
+	if throw_wind >= 0.0:
+		throw_wind -= delta
+		if throw_target != null and is_instance_valid(throw_target):
+			face_toward(throw_target.global_position, delta, 14.0)
+		if throw_wind < 0.0:
+			_throw_bottle()
+		return true
+	if grab_t >= 0.0:
+		grab_t -= delta
+		if grab_t < 0.0:
+			if saloon.take_bottle(global_position, 1.7) != null:
+				has_bottle = true
+				_show_bottle(true)
+				manager.sound("load", global_position + Vector3(0, 1.2, 0), 1.6, -12.0)
+				_update_label()
+		return true
+	if arms_hit() >= 2 or stagger_t > 0.0:
+		return false
+	if grappled_by != null and is_instance_valid(grappled_by) and manager.elapsed - grappled_t < 1.0:
+		return false
+	_bottle_cd -= delta
+	if has_bottle:
+		# he picked it up to throw it - unless he's about to squeeze off an aimed shot
+		if aim_target != null and aim_t > 0.25 and not _bottle_time():
+			return false
+		var t := _bottle_target()
+		if t == null:
+			return false
+		aim_target = null
+		throw_target = t
+		throw_wind = 0.34 / ab_speed
+		manager.sound("swing", global_position + Vector3(0, 1.6, 0), 0.8, -6.0)
+		return true
+	if _bottle_cd > 0.0 or saloon.bottles.is_empty():
+		return false
+	_bottle_cd = 0.35
+	var keen := _bottle_time() or (p("brawl") > 0.5 and aim_target == null and rng.randf() < 0.3 * p("brawl") * (1.0 - 0.5 * p("discipline")))
+	if not keen or saloon.bottle_near(global_position, 1.7) == null or _bottle_target() == null:
+		return false
+	aim_target = null
+	grab_t = 0.4 / ab_speed
+	return true
+
+
+## No better way to hurt anybody from here: gun dry or jammed, out of stars.
+func _bottle_time() -> bool:
+	if gun == "colt":
+		return (total_ammo() == 0 and not reloading) or jammed
+	if loadout_stars > 0:
+		return cylinder == 0 and _melee_target() == null
+	return _melee_target() == null
+
+
+func _bottle_target() -> Gunman:
+	var best: Gunman = null
+	var bv := -INF
+	for e in visible_enemies:
+		if not is_instance_valid(e) or not e.alive or e.falling:
+			continue
+		var d := flat_dist(e.global_position)
+		if d < 2.2 or d > 13.0:
+			continue
+		if not saloon.line_clear(muzzle(), e.global_position + Vector3(0, e.height() * 0.85, 0)):
+			continue
+		if _mate_near_line(e.chest()):
+			continue
+		var v := -d + (3.0 if e.aim_target == self else 0.0) + (2.0 if e.reloading or e.jammed else 0.0)
+		if v > bv:
+			bv = v
+			best = e
+	return best
+
+
+func _throw_bottle() -> void:
+	var t := throw_target
+	throw_target = null
+	if not has_bottle:
+		return
+	_drop_bottle()
+	if t == null or not is_instance_valid(t) or not t.alive:
+		return
+	var sigma := BASE_SIGMA * 2.0 / ab_aim * gun_hand_penalty() * (1.6 if is_moving() else 1.0) * (1.0 + 0.8 * minf(suppression, 1.0))
+	stats["bottles"] += 1
+	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * 0.86, 0), sigma)
+
+
+## Off a table or the bar within `r`, while there's nobody right on him: go and get it.
+func _go_for_bottle(r: float) -> bool:
+	if saloon.bottles.is_empty() or legs_hit() >= 2:
+		return false
+	var b := saloon.bottle_within(global_position, r)
+	if b == null:
+		return false
+	if _nearest_enemy_alive(3.0) != null:
+		return false
+	# stand at the near side of it
+	var stand := b.position + flat(global_position - b.position).normalized() * 0.85
+	stand.y = global_position.y
+	var id := saloon.nearest_node(stand)
+	if id < 0 or saloon.node_pos(id).distance_to(stand) > 1.6:
+		return false
+	_enter("advance", "after a bottle", 2.5)
+	move_mode = "run"
+	_go_to(id, 50.0)
+	return true
+
+
+func _show_bottle(on: bool) -> void:
+	if body_root == null or arm_l == null:
+		return
+	if on and bottle_mi == null:
+		bottle_mi = MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.03
+		cm.bottom_radius = 0.055
+		cm.height = 0.3
+		cm.radial_segments = 8
+		bottle_mi.mesh = cm
+		bottle_mi.material_override = saloon.mat("glass_g")
+		bottle_mi.position = Vector3(0, -0.62, 0)
+		arm_l.add_child(bottle_mi)
+	if bottle_mi != null:
+		bottle_mi.visible = on
+
+
+func _drop_bottle() -> void:
+	has_bottle = false
+	_show_bottle(false)
+	_update_label()
+
+
+# ---------------------------------------------------------------- over the rail
+
+## A man hit at the open edge of a balcony, rafter or roof can go over it: a dead man slumps over
+## the rail, a live one is knocked through it. From the balcony the floor kills him.
+func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
+	if falling or trav_t >= 0.0 or global_position.y < 1.2:
+		return false
+	var shove := how in ["fists", "blunt", "blade", "bottle"]
+	var toward := flat(dir).normalized() if shove and flat(dir).length() > 0.01 else Vector3.ZERO
+	# a dying man staggers a step or two before he goes; a blow drives a man back a good stride
+	var e := saloon.fall_edge(global_position, 1.5 if fatal else (1.6 if shove else 0.9), toward)
+	if e.is_empty():
+		return false
+	var chance := 0.0
+	match how:
+		"gun", "star":
+			chance = 0.8 if fatal else 0.28
+		"fists":
+			chance = 0.95 if fatal else 0.3 + 0.25 * (by.punch_power() if by != null and is_instance_valid(by) else 1.0)
+		"blunt", "bottle":
+			chance = 0.95 if fatal else 0.5
+		"blade":
+			chance = 0.9 if fatal else 0.3
+	if knocked_t > 0.0 or legs_hit() > 0:
+		chance += 0.2
+	if rng.randf() >= chance:
+		return false
+	_start_fall(e, by, how, fatal)
+	return true
+
+
+func _start_fall(e: Dictionary, by: Gunman, how: String, fatal: bool) -> void:
+	falling = true
+	fall_dead = fatal
+	fall_by = by
+	fall_how = how
+	stats["falls"] += 1
+	_stop()
+	knocked_t = 0.0
+	aim_target = null
+	reloading = false
+	punch_target = null
+	punch_wind = -1.0
+	throw_wind = -1.0
+	grab_t = -1.0
+	if has_bottle:
+		_drop_bottle()
+	if flip_table != null and flip_table.claimed_by == self:
+		flip_table.claimed_by = null
+	flip_table = null
+	if bool(e["rail"]):
+		saloon.break_rail(global_position)
+		manager.sound("wood", global_position + Vector3(0, 0.9, 0), 0.6, 2.0)
+	trav_type = "fall"
+	trav_from = global_position
+	trav_to = e["to"]
+	trav_h = 0.3
+	trav_dur = 0.25 + sqrt(2.0 * float(e["drop"]) / 9.8)
+	trav_t = 0.0
+	velocity = Vector3.ZERO
+	collision_mask = 0
+	if not fatal:
+		say("die")
+	brain.log_event("%s goes %s!" % [gm_name, "through the rail" if bool(e["rail"]) else "over the edge"], true)
+
+
+## Down. From the balcony (3 m and more) it's the end of him; off a lower roof he's winded,
+## maybe with a broken leg.
+func _land_fall() -> void:
+	falling = false
+	trav_t = -1.0
+	global_position = trav_to
+	collision_mask = Saloon.LAYER_WORLD | Saloon.LAYER_MEN | Saloon.LAYER_MOVE | Saloon.LAYER_SOFT
+	if body_root != null:
+		body_root.rotation = Vector3.ZERO
+	var drop := trav_from.y - trav_to.y
+	manager.sound("thud", global_position + Vector3(0, 0.3, 0), 0.5, 3.0)
+	manager.sound("wood", global_position + Vector3(0, 0.2, 0), 0.55, -2.0)
+	if manager.blood != null:
+		manager.blood.pour(global_position, 1.5)
+	var by: Gunman = fall_by if fall_by != null and is_instance_valid(fall_by) else null
+	if fall_dead or drop >= 3.0:
+		if not fall_dead:
+			stats["death_part"] = "fall"
+			stats["death_how"] = "fall"
+			if by != null and by.team != team:
+				by.stats["fall_kills"] += 1
+		stats["fell"] = true
+		hp = 0.0
+		_die(by, "fall", (trav_to - trav_from).normalized() * 0.4)
+		return
+	# a shorter drop: knocked flat; maybe a leg goes
+	hp -= 12.0
+	if rng.randf() < 0.25 + 0.15 * drop:
+		var leg := "leg_r" if rng.randf() < 0.5 else "leg_l"
+		wounds[leg] += 1
+		stats["wounds"].append(leg)
+		_wound_visual(leg)
+	if hp <= 0.0:
+		hp = 0.0
+		stats["death_part"] = "fall"
+		stats["death_how"] = "fall"
+		_die(by, "fall", Vector3.DOWN)
+		return
+	knock_down(1.8)
+	_update_label()
+
+
 # ---------------------------------------------------------------- getting hurt
 
 func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vector3) -> void:
-	if not alive:
+	if not alive or falling:
 		return
 	hp -= amount
 	last_hurt_t = manager.elapsed
@@ -2163,8 +2465,13 @@ func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vect
 		stats["death_how"] = how
 		if how != "fists" and part != "head":
 			say("die")
+		if _maybe_fall(how, by, dir, true):
+			return
 		_die(by, how, dir)
 	else:
+		if _maybe_fall(how, by, dir, false):
+			_update_label()
+			return
 		decide_t = minf(decide_t, 0.05)
 		brain.member_hit(self, by)
 		if how != "fists":

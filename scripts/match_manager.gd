@@ -23,6 +23,7 @@ const TEAM_COLORS := [Color(0.72, 0.2, 0.16), Color(0.3, 0.42, 0.62)]
 ## A throwing star where it lands: it rarely kills outright, but it always bleeds.
 const STAR_DMG := {"head": 55.0, "heart": 45.0, "gut": 18.0, "arm_r": 8.0, "arm_l": 8.0, "leg_l": 8.0, "leg_r": 8.0}
 const STAR_SPEED := 24.0
+const BOTTLE_SPEED := 13.0
 const STANDOFF_LINES := {"saloon": "The piano stops. Nobody draws for %d seconds...", "dojo": "The fighters bow. %d breaths...",
 	"bamboo": "The wind drops in the bamboo. %d seconds...", "temple": "The temple bell sounds. %d seconds..."}
 ## Where a slug lands decides everything. Head or heart: dead. Gut: badly hurt and bleeding.
@@ -491,6 +492,99 @@ func throw_star(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 			g.suppression = minf(1.5, g.suppression + 0.15)
 			sound("whiz", g.global_position + Vector3(0, 1.6, 0), 1.6, -8.0)
 	return res
+
+
+## A bottle thrown at a man's head: slow enough to see coming, it rings a skull (a knockdown)
+## and bruises anything else - and it smashes whatever it hits, including the bottles on the
+## shelf.
+func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
+	var from := thrower.muzzle() + Vector3(0, 0.2, 0)
+	var dir := (aim - from).normalized()
+	var right := dir.cross(Vector3.UP)
+	if right.length() < 0.01:
+		right = Vector3.RIGHT
+	right = right.normalized()
+	var up := right.cross(dir).normalized()
+	dir = (dir + right * rng.randfn(0.0, sigma) + up * rng.randfn(0.0, sigma)).normalized()
+	var end := from + dir * 16.0
+	var hit := saloon.bullet_ray(from, end, rng, 1.0)
+	var stop: Vector3 = hit.get("position", end)
+	var seg_len := from.distance_to(stop)
+	sound("swing", from, 0.7, -6.0)
+	var victim: Gunman = null
+	var best_t := seg_len
+	var hit_y := 0.0
+	for g in alive_gunmen():
+		if g == thrower or g.falling:
+			continue
+		var r := _ray_capsule(from, dir, seg_len, g)
+		if r.x >= 0.0 and r.x < best_t:
+			best_t = r.x
+			victim = g
+			hit_y = r.y
+	if victim != null:
+		stop = from + dir * best_t
+	var flight := from.distance_to(stop) / BOTTLE_SPEED
+	_bottle_visual(from, stop, flight)
+	var v := victim
+	var at := stop
+	var hy := hit_y
+	_pending.append([elapsed + flight, func():
+		sound("smash", at)
+		_glass(at)
+		saloon.bottle_hit(at)
+		if v == null or not is_instance_valid(v) or not v.alive or v.falling:
+			return
+		# a blade or a staff can bat it away; a man who sees it coming may duck it
+		var bl := float(v.weapon()["block"]) * 0.6 * (0.5 + 0.5 * v.ab_smarts)
+		if v.facing(at, 0.5) and v.knocked_t <= 0.0 and rng.randf() < bl + 0.12 * v.ab_jump:
+			v.stats["blocks"] += 1
+			return
+		var part := hit_part(v, at, hy)
+		if v.team != thrower.team and is_instance_valid(thrower):
+			thrower.stats["hits"] += 1
+			thrower.stats["bottle_hits"] += 1
+		last_damage_t = elapsed
+		var by: Gunman = thrower if is_instance_valid(thrower) else null
+		if part == "head":
+			v.take_damage(16.0 * rng.randf_range(0.85, 1.15), "bottle", by, "head_blunt", dir)
+			if v.alive and v.knocked_t <= 0.0 and not v.falling:
+				v.knock_down(1.6)
+		else:
+			v.take_damage(7.0 * rng.randf_range(0.85, 1.15), "bottle", by, "bruise", dir)
+			if v.alive:
+				v.stagger_t = maxf(v.stagger_t, 0.45)
+				v.suppression = minf(1.5, v.suppression + 0.4)
+	])
+	thrower.stats["shots"] += 1
+	return {"hit": victim}
+
+
+func glass(at: Vector3) -> void:
+	_glass(at)
+
+
+func _bottle_visual(a: Vector3, b: Vector3, t: float) -> void:
+	if headless:
+		return
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.03
+	cm.bottom_radius = 0.055
+	cm.height = 0.3
+	cm.radial_segments = 8
+	mi.mesh = cm
+	mi.material_override = saloon.mat("glass_g")
+	mi.position = a
+	world.add_child(mi)
+	var tt := maxf(t, 0.05)
+	var lift := clampf(a.distance_to(b) * 0.06, 0.1, 0.7)
+	var tw := mi.create_tween()
+	tw.set_parallel(true)
+	tw.tween_method(func(u: float): if is_instance_valid(mi): mi.position = a.lerp(b, u) + Vector3(0, 4.0 * u * (1.0 - u) * lift, 0), 0.0, 1.0, tt)
+	tw.tween_property(mi, "rotation:x", 18.0 * tt, tt)
+	tw.chain().tween_callback(func(): if is_instance_valid(mi): mi.visible = false)
+	_fx.append([mi, t + 1.5])
 
 
 func _star_visual(a: Vector3, b: Vector3, t: float) -> void:

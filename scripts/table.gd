@@ -97,6 +97,8 @@ func flip(toward: Vector3) -> void:
 	if flipped:
 		return
 	flipped = true
+	if saloon != null:
+		saloon.spill_bottles(position)
 	var d := Vector3(toward.x, 0, toward.z)
 	if d.length() < 0.01:
 		d = Vector3.FORWARD

@@ -52,10 +52,10 @@ const KIND_HELP := {
 ## smarts: decides faster and better. aim: steadiness of hand (divides the spread). nerve: added
 ## to his temperament - minions panic, supers don't.
 const GRADES := {
-	"Minion": {"speed": 0.85, "jump": 0.0, "smarts": 0.2, "aim": 0.7, "nerve": -0.25},
+	"Minion": {"speed": 0.85, "jump": 0.0, "smarts": 0.2, "aim": 0.65, "nerve": -0.25},
 	"Regular": {"speed": 1.0, "jump": 0.3, "smarts": 0.5, "aim": 1.0, "nerve": 0.0},
-	"Veteran": {"speed": 1.15, "jump": 0.6, "smarts": 0.72, "aim": 1.2, "nerve": 0.1},
-	"Super": {"speed": 1.4, "jump": 1.0, "smarts": 0.95, "aim": 1.6, "nerve": 0.25},
+	"Veteran": {"speed": 1.15, "jump": 0.6, "smarts": 0.72, "aim": 1.3, "nerve": 0.1},
+	"Super": {"speed": 1.4, "jump": 1.0, "smarts": 0.95, "aim": 2.0, "nerve": 0.25},
 }
 const GRADE_ORDER: Array[String] = ["Minion", "Regular", "Veteran", "Super"]
 const GRADE_NAMES := {

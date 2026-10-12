@@ -427,7 +427,7 @@ func _open_editor(t: int) -> void:
 		text = String(AiScript.PRESETS["Built-in brain"])
 	var title := "AI rules - %s" % manager.team_names[t]
 	if OS.has_feature("web"):
-		JavaScriptBridge.eval("window.brawlEditor && window.brawlEditor.open(%d, %s, %s, %s, %s)" % [t, JSON.stringify(title), JSON.stringify(text), JSON.stringify(AiScript.help_text()), JSON.stringify(AiScript.PRESETS)], true)
+		JavaScriptBridge.eval("window.brawlEditor && window.brawlEditor.open(%d, %s, %s, %s, %s)" % [t, JSON.stringify(title), JSON.stringify(text), JSON.stringify(AiScript.help_text()), JSON.stringify(AiScript.PRESETS), JSON.stringify(AiScript.vocab())], true)
 		return
 	# desktop / native: an editor drawn in Godot
 	if _gd_editor == null:
@@ -442,6 +442,19 @@ func _open_editor(t: int) -> void:
 			pp.add_item(k)
 		pp.item_selected.connect(func(i: int): _gd_text.text = String(AiScript.PRESETS[AiScript.PRESET_ORDER[i]]))
 		prow.add_child(pp)
+		prow.add_child(_key("Add an example:", 13))
+		var ex := OptionButton.new()
+		ex.add_item("(pick one)")
+		for e in AiScript.EXAMPLES:
+			ex.add_item(String(e[0]))
+		ex.item_selected.connect(func(i: int):
+			if i <= 0:
+				return
+			var line := String(AiScript.EXAMPLES[i - 1][1])
+			var ln := _gd_text.get_caret_line()
+			_gd_text.insert_line_at(ln, line)
+			ex.select(0))
+		prow.add_child(ex)
 		_gd_text = TextEdit.new()
 		_gd_text.custom_minimum_size = Vector2(620, 300)
 		_gd_text.add_theme_font_size_override("font_size", 14)
@@ -751,6 +764,8 @@ func _fate(m: Dictionary) -> String:
 		"bled out": how = "bled out from a gut shot"
 		"fists": how = "beaten to death"
 		"head_blunt": how = "skull broken"
+		"fall": how = "fell to his death"
+		"bruise": how = "beaten down"
 		"": how = "killed"
 		_: how = "shot in the %s" % String(MatchManager.PART_NAMES.get(dp, dp))
 	var dh := String(m.get("death_how", ""))
@@ -760,6 +775,10 @@ func _fate(m: Dictionary) -> String:
 		how = "star in the %s" % String(MatchManager.PART_NAMES.get(dp, dp))
 	elif dh == "blunt" and dp != "head_blunt":
 		how = "beaten down"
+	elif dh == "bottle":
+		how = "brained with a bottle"
+	if bool(m.get("fell", false)) and dp != "fall":
+		how += ", and over the rail"
 	var by := " by %s" % String(m["killed_by"]) if dp != "bled out" else " (wound from %s)" % String(m["killed_by"])
 	return "%s%s at %ds" % [how, by, int(m["died_at"])]
 

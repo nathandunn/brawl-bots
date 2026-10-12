@@ -72,8 +72,8 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 				var dp := String(m.get("death_part", ""))
 				dp = "head/heart" if dp == "head" or dp == "heart" else ("limb" if dp.begins_with("arm") or dp.begins_with("leg") else dp)
 				deaths[dp] = int(deaths.get(dp, 0)) + 1
-			for k in ["blocks", "parries", "dodges", "jumps", "stars", "star_hits"]:
-				melee[t][k] += int(m.get(k, 0))
+			for k in ["blocks", "parries", "dodges", "jumps", "stars", "star_hits", "bottles", "bottle_hits", "falls", "fall_kills"]:
+				melee[t][k] = int(melee[t].get(k, 0)) + int(m.get(k, 0))
 			melee[t]["hits"] += int(m.get("melee_hits", 0))
 			melee[t]["kills"] += int(m.get("melee_kills", 0))
 			var rr: Dictionary = m.get("rules", {})
@@ -133,7 +133,7 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 		wps.append("%s %d" % [k, wounds[k]])
 	txt += "Wounds: " + ", ".join(wps) + ". "
 	for t in 2:
-		txt += "%s melee hits %d kills %d, blocks %d parries %d dodges %d, jumps %d, stars %d/%d. " % [String(tn[t]), melee[t]["hits"], melee[t]["kills"], melee[t]["blocks"], melee[t]["parries"], melee[t]["dodges"], melee[t]["jumps"], melee[t]["star_hits"], melee[t]["stars"]]
+		txt += "%s melee hits %d kills %d, blocks %d parries %d dodges %d, jumps %d, stars %d/%d, bottles %d/%d, went over the edge %d (fall kills %d). " % [String(tn[t]), melee[t]["hits"], melee[t]["kills"], melee[t]["blocks"], melee[t]["parries"], melee[t]["dodges"], melee[t]["jumps"], melee[t]["star_hits"], melee[t]["stars"], melee[t].get("bottle_hits", 0), melee[t].get("bottles", 0), melee[t].get("falls", 0), melee[t].get("fall_kills", 0)]
 	for t in 2:
 		txt += "%s acc %d%% heads %d deny %d high %d fistkills %d flips %d ff %d. " % [String(tn[t]), int(100.0 * hits[t] / maxf(shots[t], 1)), heads[t], deny[t], high[t], fist_kills[t], flips[t], int(ff[t])]
 	return {"text": txt, "data": {"matches": results.size(), "wins": wins, "draws": draws, "avg_duration": dur / n,

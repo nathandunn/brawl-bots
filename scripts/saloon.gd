@@ -49,6 +49,8 @@ var spawn_rects: Array[Rect2] = [Rect2(), Rect2()]
 var spawns: Array = [[], []]
 var tables: Array[Table] = []
 var bottles: Array[MeshInstance3D] = []
+var rail_posts: Array[MeshInstance3D] = []   # the balusters, so a man can go through them
+var _splinters: Array[Node3D] = []
 var env := {}                          # lighting for main.gd
 
 ## navigation
@@ -299,7 +301,7 @@ func _map_saloon() -> void:
 	add_child(rail)
 	var bx := -rail_half
 	while bx <= rail_half:
-		_deco_box(Vector3(0.07, RAIL_H, 0.07), Vector3(bx, balc_y + RAIL_H * 0.5, balc_z), "dark")
+		rail_posts.append(_deco_box(Vector3(0.07, RAIL_H, 0.07), Vector3(bx, balc_y + RAIL_H * 0.5, balc_z), "dark"))
 		bx += 0.16
 	_deco_box(Vector3(rail_half * 2, 0.08, 0.16), Vector3(0, balc_y + RAIL_H, balc_z), "wood")
 	_deco_box(Vector3(rail_half * 2, 0.06, 0.12), Vector3(0, balc_y + 0.05, balc_z), "wood")
@@ -373,6 +375,11 @@ func _table(c: Vector2) -> void:
 	tables.append(tb)
 	_circ_obs(c, 0.62, 0.8, 0, true, "table")
 	tb.obstacle_index = obstacles.size() - 1
+	# a bottle or two on every table, for drinking or throwing
+	var n := 1 + (1 if (int(absf(c.x * 7.0 + c.y * 3.0)) % 2) == 0 else 0)
+	for k in n:
+		var off := Vector2(0.22, 0.0).rotated(float(k) * 2.4 + c.x)
+		_bottle(Vector3(c.x + off.x, Table.TOP_Y + 0.19, c.y + off.y), "glass_g" if k == 0 else "glass_b")
 
 
 func _barrel(at: Vector3) -> void:
@@ -1080,6 +1087,12 @@ func reset_props() -> void:
 		tb.reset()
 	for b in bottles:
 		b.visible = true
+	for rp in rail_posts:
+		rp.visible = true
+	for sp in _splinters:
+		if is_instance_valid(sp):
+			sp.queue_free()
+	_splinters.clear()
 
 
 func table_near(p: Vector3, radius: float) -> Table:
@@ -1093,6 +1106,148 @@ func table_near(p: Vector3, radius: float) -> Table:
 			bd = d
 			best = tb
 	return best
+
+
+## The nearest whole bottle a man standing at `p` can reach - off the bar, the shelf behind
+## it or a table.
+func bottle_near(p: Vector3, reach: float) -> MeshInstance3D:
+	var best: MeshInstance3D = null
+	var bd := reach
+	for b in bottles:
+		if not b.visible:
+			continue
+		var dy := b.position.y - p.y
+		if dy < 0.3 or dy > 2.5:
+			continue
+		var d := Vector2(b.position.x - p.x, b.position.z - p.z).length()
+		if d < bd:
+			bd = d
+			best = b
+	return best
+
+
+## The nearest whole bottle within `r` (flat) of `p`, wherever it is, for a man to go and get.
+func bottle_within(p: Vector3, r: float) -> MeshInstance3D:
+	var best: MeshInstance3D = null
+	var bd := r
+	for b in bottles:
+		if not b.visible or absf(b.position.y - p.y) > 2.5:
+			continue
+		var d := Vector2(b.position.x - p.x, b.position.z - p.z).length()
+		if d < bd:
+			bd = d
+			best = b
+	return best
+
+
+func take_bottle(p: Vector3, reach: float) -> MeshInstance3D:
+	var b := bottle_near(p, reach)
+	if b != null:
+		b.visible = false
+	return b
+
+
+## A table going over takes its bottles with it.
+func spill_bottles(p: Vector3) -> int:
+	var n := 0
+	for b in bottles:
+		if b.visible and absf(b.position.y - Table.TOP_Y - 0.19) < 0.05 and Vector2(b.position.x - p.x, b.position.z - p.z).length() < 0.5:
+			b.visible = false
+			n += 1
+	return n
+
+
+## Height of whatever a man falling at `p` lands on: the highest deck below him, or the floor.
+func ground_below(p: Vector3) -> float:
+	var y := 0.0
+	for i in range(1, decks.size()):
+		var dy := float(decks[i]["y"])
+		if dy < p.y - 0.5 and dy > y and (decks[i]["rect"] as Rect2).grow(0.05).has_point(Vector2(p.x, p.z)):
+			y = dy
+	return y
+
+
+## If `p` is within `r` of an open edge of a raised deck - the balcony's rail, the side of a
+## rafter, the eaves of a roof - where a man would land going over it:
+## {"to": landing point, "drop": metres, "rail": through a balustrade?}. With `toward` set (a
+## blow's direction) only an edge on that side counts. Edges against the walls are not open.
+func fall_edge(p: Vector3, r: float, toward := Vector3.ZERO) -> Dictionary:
+	for i in range(1, decks.size()):
+		var y := float(decks[i]["y"])
+		if absf(p.y - y) > 0.45:
+			continue
+		var rc: Rect2 = decks[i]["rect"]
+		if not rc.grow(0.25).has_point(Vector2(p.x, p.z)):
+			continue
+		var best := {}
+		var best_s := -INF
+		var edges := [[Vector3(-1, 0, 0), p.x - rc.position.x, rc.position.x], [Vector3(1, 0, 0), rc.end.x - p.x, rc.end.x],
+			[Vector3(0, 0, -1), p.z - rc.position.y, rc.position.y], [Vector3(0, 0, 1), rc.end.y - p.z, rc.end.y]]
+		for e in edges:
+			var out: Vector3 = e[0]
+			var dist: float = e[1]
+			var at: float = e[2]
+			if dist > r:
+				continue
+			if (out.x != 0.0 and absf(at) >= half_x - 0.3) or (out.z != 0.0 and absf(at) >= half_z - 0.3):
+				continue
+			var lean := out.dot(toward)
+			if toward != Vector3.ZERO and lean < 0.15:
+				continue
+			var land := p + out * (maxf(dist, 0.0) + 0.95)
+			land.y = ground_below(Vector3(land.x, y, land.z))
+			if y - land.y < 1.2:
+				continue
+			# not onto the stairs
+			var on_stairs := false
+			for rp in ramps:
+				var a := Vector2(rp["foot"].x, rp["foot"].z)
+				var b := Vector2(rp["top"].x, rp["top"].z)
+				var q := Vector2(land.x, land.z)
+				var t := clampf((q - a).dot(b - a) / maxf((b - a).length_squared(), 0.001), 0.0, 1.0)
+				if q.distance_to(a.lerp(b, t)) < float(rp["hw"]) + 0.4:
+					on_stairs = true
+			if on_stairs:
+				continue
+			var s := -dist + 2.0 * lean
+			if s > best_s:
+				best_s = s
+				var railed := false
+				for rpost in rail_posts:
+					if absf(rpost.position.z - at) < 0.2 and out.z != 0.0:
+						railed = true
+						break
+				best = {"to": land, "drop": y - land.y, "rail": railed}
+		if not best.is_empty():
+			return best
+	return {}
+
+
+## A man going through the balustrade: the balusters by him snap and go flying.
+func break_rail(p: Vector3) -> void:
+	for rp in rail_posts:
+		if rp.visible and absf(rp.position.x - p.x) < 0.42:
+			rp.visible = false
+			if is_inside_tree() and not Engine.is_editor_hint() and DisplayServer.get_name() != "headless":
+				var sp := RigidBody3D.new()
+				sp.collision_layer = LAYER_RAGDOLL
+				sp.collision_mask = LAYER_WORLD
+				var cs := CollisionShape3D.new()
+				var bs := BoxShape3D.new()
+				bs.size = Vector3(0.07, RAIL_H * 0.6, 0.07)
+				cs.shape = bs
+				sp.add_child(cs)
+				var mi := MeshInstance3D.new()
+				var bm := BoxMesh.new()
+				bm.size = bs.size
+				mi.mesh = bm
+				mi.material_override = _mats["dark"]
+				sp.add_child(mi)
+				sp.position = rp.position
+				add_child(sp)
+				sp.apply_central_impulse(Vector3(randf_range(-0.6, 0.6), 0.8, randf_range(1.0, 2.2)) * 0.4)
+				sp.apply_torque_impulse(Vector3(randf_range(-0.3, 0.3), 0, randf_range(-0.3, 0.3)))
+				_splinters.append(sp)
 
 
 func bottle_hit(at: Vector3) -> MeshInstance3D:

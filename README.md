@@ -42,7 +42,10 @@ yours to rewrite. Part of the [Precog sim suite](https://apps.precogsoftwareserv
 - **Blades and staffs:** reach, wind-up, and the other man's defence - he can **block** a blow he
   sees coming (and a star), **parry** and riposte, or **dodge**. A katana cuts (bleeds; finds the
   throat and heart more often in a better swordsman's hands); nunchaku and staff bruise, break
-  limbs and ring skulls (knockdowns). **Throwing stars** are silent, slower than a slug, rarely
+  limbs and ring skulls (knockdowns). **Bottles** come off the bar, the shelf and every table:
+  an empty or jammed gunman (or a brawler) throws one at a head (a skull hit knocks him flat) or
+  breaks it over one. **Over the rail:** a man shot or hit at the balcony's edge goes through the
+  balustrade and the fall kills him; off a low roof it only knocks him flat. **Throwing stars** are silent, slower than a slug, rarely
   kill outright and always bleed.
 
 ## The AI
@@ -59,7 +62,10 @@ legs allow: vaulting low cover and water, dropping off decks, leaping up onto th
 ladders.
 
 **The rules** (`scripts/ai_script.gd`) - the exposed AI. Each side can run a script, edited in the
-app (*Teams / tactics -> Edit AI rules*), checked with line-numbered errors, saved in the browser:
+app (*Teams / tactics -> Edit AI rules*), checked with line-numbered errors (with "did you mean"
+for typos), saved in the browser. Type a few letters and it suggests what can go there - a
+condition, a number, an action, a trait - with what it means (Tab or tap to take one); the word
+under the cursor is explained; *Add an example* drops in a ready-made rule:
 
 ```
 # first rule that holds (and can be done) wins; anything uncovered -> built-in brain
@@ -73,10 +79,10 @@ when melee and in_reach -> rush nearest
 otherwise -> default
 ```
 
-About 30 yes/no conditions (bleeding, pinned, aimed_at, enemy_reloading, high, outnumbered,
-super, melee, in_reach, ...), 14 numbers (hp, bleed_secs, ammo, nearest, time, diff, random, ...),
-11 actions (hold, advance, hide, flank, rush nearest|weakest|reloading|high|aiming|melee,
-fall back, take high, hunt, flip table, cower, default), `set <trait>` and `aim <multiplier>`.
+About 33 yes/no conditions (bleeding, pinned, aimed_at, enemy_reloading, high, edge, outnumbered,
+super, melee, in_reach, has_bottle, near_bottle, ...), 14 numbers (hp, bleed_secs, ammo, nearest, time, diff, random, ...),
+12 actions (hold, advance, hide, flank, rush nearest|weakest|reloading|high|aiming|melee,
+fall back, take high, hunt, flip table, grab bottle, cower, default), `set <trait>` and `aim <multiplier>`.
 Presets to start from: Careful hands, Wild bunch, High ground first, Ninja ambush, Supers lead
 minions swarm, Last stand. *Show intents* prints which rule each man is following; the results
 list how often each rule decided.

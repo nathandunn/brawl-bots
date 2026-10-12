@@ -134,6 +134,12 @@ body {
 #brawl-editor #be-msg.good { color: #a6e88a; }
 #brawl-editor details { max-height: 32vh; overflow: auto; background: #15100c; border-radius: 6px; padding: 4px 8px; }
 #brawl-editor pre { margin: 0; font-size: 12px; white-space: pre-wrap; color: #d9cfbb; }
+#brawl-editor #be-sugg { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; align-items: center; font-size: 13px; }
+#brawl-editor #be-sugg .chip { background: #2b2017; border: 1px solid #6a5030; border-radius: 14px; padding: 3px 10px; cursor: pointer; color: #f4ead6; }
+#brawl-editor #be-sugg .chip.on { background: #5a4220; border-color: #ffd98a; }
+#brawl-editor #be-sugg .chip small { color: #bfae90; margin-left: 6px; }
+#brawl-editor #be-sugg .hint { color: #9c8d74; }
+#brawl-editor #be-look { min-height: 1.2em; font-size: 13px; color: #ffd98a; }
 		</style>
 		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
 <link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
@@ -167,8 +173,11 @@ body {
 
 		<div id="brawl-editor">
 			<h2 id="be-title">AI rules</h2>
-			<div class="row"><label>Start from: <select id="be-preset"></select></label></div>
+			<div class="row"><label>Start from: <select id="be-preset"></select></label>
+				<label>Add an example: <select id="be-example"></select></label></div>
 			<textarea id="be-text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+			<div id="be-sugg"><span class="hint">Type a few letters for suggestions - Tab or tap to take one.</span></div>
+			<div id="be-look"></div>
 			<div id="be-msg"></div>
 			<div class="row">
 				<button id="be-check">Check</button>
@@ -182,16 +191,119 @@ body {
 		window.brawlEditor = (function () {
 			var el = document.getElementById('brawl-editor'), ta = document.getElementById('be-text');
 			var msg = document.getElementById('be-msg'), sel = document.getElementById('be-preset');
-			var queue = [], team = 0, presets = {};
+			var queue = [], team = 0, presets = {}, vocab = null, picks = [], pickI = 0;
+			var sugg = document.getElementById('be-sugg'), look = document.getElementById('be-look'), exSel = document.getElementById('be-example');
+			var HINT = '<span class="hint">Type a few letters for suggestions - Tab or tap to take one.</span>';
+			function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+			// what can go here, from what's before the cursor on this line:
+			// {typed: the text being completed, start: where it begins, pool: {word: meaning}}
+			function context() {
+				var pos = ta.selectionStart, before = ta.value.slice(0, pos);
+				var line = before.slice(before.lastIndexOf('\n') + 1).toLowerCase();
+				if (line.indexOf('#') >= 0) { return null; }
+				var V = vocab, pool = {}, typed, m;
+				function add(o) { for (var k in o) { pool[k] = o[k]; } }
+				var arrow = line.indexOf('->');
+				if (arrow >= 0) {
+					var act = line.slice(arrow + 2).replace(/^\s+/, '');
+					if ((m = act.match(/^rush\s+([a-z]*)$/))) { typed = m[1]; add(V.rush); }
+					else if (Object.keys(V.actions).some(function (k) { return k.indexOf(act) === 0 && k !== act; })) { typed = act; add(V.actions); }
+					else if (/\s$/.test(act) && !/for/.test(act)) { typed = ''; pool = {'for': V.keywords['for']}; }
+					else { return null; }
+				} else {
+					m = line.match(/([a-z_]*)$/); typed = m ? m[1] : '';
+					var head = line.slice(0, line.length - typed.length);
+					if (/^\s*$/.test(head)) { pool = {when: V.keywords.when, otherwise: V.keywords.otherwise, set: V.keywords.set, aim: V.keywords.aim}; }
+					else if (/^\s*set\s+$/.test(head)) { add(V.traits); }
+					else if (/^\s*(when\s+|.*\sand\s+|.*\snot\s+)$/.test(head)) { add(V.bools); add(V.nums); if (!/not\s+$/.test(head)) { pool.not = V.keywords.not; } }
+					else if (/^\s*(when|otherwise)\b/.test(head) && /\s$/.test(head)) { pool = {and: V.keywords.and, '->': 'then the action'}; }
+					else { return null; }
+				}
+				return {typed: typed, start: pos - typed.length, pos: pos, pool: pool};
+			}
+			function suggest() {
+				if (!vocab) { return; }
+				var c = context();
+				picks = [];
+				if (c) {
+					var keys = Object.keys(c.pool);
+					keys.forEach(function (k) { if (k.indexOf(c.typed) === 0 && k !== c.typed) { picks.push([k, c.pool[k]]); } });
+					if (c.typed.length >= 2) {   // then anything containing it
+						keys.forEach(function (k) { if (k.indexOf(c.typed) > 0) { picks.push([k, c.pool[k]]); } });
+					}
+				}
+				picks = picks.slice(0, 12); pickI = 0;
+				if (!picks.length) { sugg.innerHTML = HINT; return; }
+				sugg.innerHTML = picks.map(function (p, i) { return '<span class="chip' + (i === pickI ? ' on' : '') + '" data-i="' + i + '">' + esc(p[0]) + '<small>' + esc(p[1]) + '</small></span>'; }).join('');
+			}
+			function take(i) {
+				var c = context(); if (!c || !picks[i]) { return; }
+				var w = picks[i][0], V = vocab, tail = ' ';
+				if (w === 'otherwise') { w = 'otherwise -> '; tail = ''; }
+				else if (V.nums[w] !== undefined) { tail = ' < '; }
+				else if (V.actions[w] !== undefined && w !== 'rush') { tail = ''; }
+				var start = c.start;
+				// the gap before '->' wants a space
+				if (w === '->' && start > 0 && ta.value[start - 1] !== ' ') { w = ' ->'; }
+				ta.value = ta.value.slice(0, start) + w + tail + ta.value.slice(c.pos);
+				var np = start + w.length + tail.length;
+				ta.setSelectionRange(np, np); ta.focus(); suggest(); lookup();
+			}
+			// the word under the cursor, explained
+			function lookup() {
+				if (!vocab) { return; }
+				var v = ta.value, p = ta.selectionStart, a = p, b = p;
+				while (a > 0 && /[a-z_]/i.test(v[a - 1])) { a--; }
+				while (b < v.length && /[a-z_]/i.test(v[b])) { b++; }
+				var w = v.slice(a, b).toLowerCase(), t = '';
+				var two = (w === 'take' || w === 'fall' || w === 'flip' || w === 'grab') ? v.slice(a).toLowerCase().match(/^(take high|fall back|flip table|grab bottle)/) : null;
+				if (two) { w = two[1]; }
+				var V = vocab;
+				if (V.bools[w] !== undefined) { t = 'yes/no: ' + V.bools[w]; }
+				else if (V.nums[w] !== undefined) { t = 'number: ' + V.nums[w]; }
+				else if (V.actions[w] !== undefined) { t = 'action: ' + V.actions[w]; }
+				else if (V.traits[w] !== undefined) { t = 'trait: ' + V.traits[w]; }
+				else if (V.rush[w] !== undefined) { t = V.rush[w]; }
+				else if (V.keywords[w] !== undefined) { t = V.keywords[w]; }
+				look.textContent = t ? w + ' - ' + t : '';
+			}
+			sugg.addEventListener('mousedown', function (e) { var ch = e.target.closest('.chip'); if (ch) { e.preventDefault(); take(+ch.dataset.i); } });
+			ta.addEventListener('input', function () { suggest(); lookup(); });
+			ta.addEventListener('click', function () { suggest(); lookup(); });
+			ta.addEventListener('keyup', function (e) { if (e.key.indexOf('Arrow') === 0 && !(picks.length && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.altKey)) { lookup(); } });
+			ta.addEventListener('keydown', function (e) {
+				if (!picks.length) { return; }
+				if (e.key === 'Tab') { e.preventDefault(); take(pickI); }
+				else if (e.key === 'Escape') { picks = []; sugg.innerHTML = HINT; }
+				else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && e.altKey) {
+					e.preventDefault(); pickI = (pickI + (e.key === 'ArrowDown' ? 1 : picks.length - 1)) % picks.length;
+					Array.prototype.forEach.call(sugg.children, function (c, i) { c.classList.toggle('on', i === pickI); });
+				}
+			});
+			exSel.onchange = function () {
+				var i = +exSel.value; exSel.value = '';
+				if (!vocab || isNaN(i) || !vocab.examples[i]) { return; }
+				var line = vocab.examples[i][1], v = ta.value, p = ta.selectionStart;
+				var ls = v.lastIndexOf('\n', p - 1) + 1;   // above the line the cursor is on
+				var oth = v.search(/^\s*otherwise\b/m);
+				if (line.indexOf('otherwise') !== 0 && oth >= 0 && ls > oth) { ls = oth; }   // never below 'otherwise'
+				if (line.indexOf('set ') === 0 || line.indexOf('aim ') === 0) { ls = 0; }
+				ta.value = v.slice(0, ls) + line + '\n' + v.slice(ls);
+				ta.setSelectionRange(ls + line.length, ls + line.length); ta.focus(); lookup();
+				msg.className = ''; msg.textContent = 'Added: ' + line;
+			};
 			function send(action) { queue.push(JSON.stringify({action: action, team: team, text: ta.value})); }
 			document.getElementById('be-check').onclick = function () { msg.className = ''; msg.textContent = 'Checking...'; send('check'); };
 			document.getElementById('be-apply').onclick = function () { msg.className = ''; msg.textContent = 'Applying...'; send('apply'); };
 			document.getElementById('be-cancel').onclick = function () { el.classList.remove('open'); send('cancel'); };
 			sel.onchange = function () { if (presets[sel.value] !== undefined) { ta.value = presets[sel.value]; } };
-			['keydown', 'keyup', 'keypress'].forEach(function (k) { el.addEventListener(k, function (e) { e.stopPropagation(); }, true); });
+			['keydown', 'keyup', 'keypress'].forEach(function (k) { el.addEventListener(k, function (e) { e.stopPropagation(); }, false); });  // bubble: the textarea gets its keys first, the game none
 			return {
-				open: function (t, title, text, help, ps) {
-					team = t; presets = ps || {};
+				open: function (t, title, text, help, ps, vc) {
+					team = t; presets = ps || {}; vocab = vc || null;
+					exSel.innerHTML = '<option value="">(pick one)</option>';
+					if (vocab) { vocab.examples.forEach(function (e, i) { var o = document.createElement('option'); o.value = i; o.textContent = e[0]; exSel.appendChild(o); }); }
+					sugg.innerHTML = HINT; look.textContent = '';
 					document.getElementById('be-title').textContent = title;
 					document.getElementById('be-help').textContent = help;
 					sel.innerHTML = '<option value="">(your rules)</option>';
@@ -210,7 +322,7 @@ body {
 		</script>
 		<script src="index.js"></script>
 		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":480500,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":497908,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
 

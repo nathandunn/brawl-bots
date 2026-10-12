@@ -47,6 +47,9 @@ const BOOLS := {
 	"ninja": "he is a ninja",
 	"has_stars": "he has throwing stars left",
 	"in_reach": "an enemy is inside his weapon's reach",
+	"has_bottle": "he has a bottle in his hand",
+	"near_bottle": "a bottle (bar, shelf or table) within 7 m",
+	"edge": "he is near the open edge of the balcony or a roof",
 }
 const NUMS := {
 	"hp": "health 0-100",
@@ -75,10 +78,32 @@ const ACTIONS := {
 	"take high": "the nearest high ground",
 	"hunt": "go looking toward the enemy's end",
 	"flip table": "kick over the nearest table into cover",
+	"grab bottle": "go and get the nearest bottle within 7 m (then throw it)",
 	"default": "whatever the built-in brain would do",
 }
 const RUSH_TARGETS: Array[String] = ["nearest", "weakest", "reloading", "high", "aiming", "melee"]
 const OPS: Array[String] = ["<=", ">=", "==", "!=", "<", ">"]
+
+## Ready-made lines for the editor's Examples list: [what it does, the line].
+const EXAMPLES := [
+	["Bleeding badly? Make it count", "when bleeding and bleed_secs < 15 -> rush nearest for 3"],
+	["Punish a man who's reloading", "when enemy_reloading and nearest < 8 -> rush reloading"],
+	["Duck a gun pointed at you", "when aimed_at and in_cover -> hide for 1.5"],
+	["Pinned down: get out of sight", "when pinned -> hide for 2"],
+	["Out of rounds: find a bottle", "when dry and not has_bottle and near_bottle -> grab bottle"],
+	["Get up top early", "when not high and time > 90 -> take high"],
+	["Off the rail when they're close", "when edge and nearest < 4 -> fall back"],
+	["Supers break a stalemate", "when super and stalemate -> flank"],
+	["Minions stick together", "when minion and alone -> fall back"],
+	["Blades: wait, then strike", "when melee and nearest < 6 -> rush nearest for 1.5"],
+	["Outnumbered: dig in", "when outnumbered and enemy_seen -> hold"],
+	["Losing on the clock: go", "when time < 25 and diff < 0 -> hunt"],
+	["A coin toss (30%)", "when random < 30 and stalemate -> advance"],
+	["Kick a table over under fire", "when pinned and not in_cover -> flip table"],
+	["Steadier, slower shooting", "aim 1.3"],
+	["A trait for the whole side", "set caution 0.8"],
+	["Everything else: built-in brain", "otherwise -> default"],
+]
 
 const PRESETS := {
 	"Built-in brain": "# Empty: every man uses the built-in brain.\n# Add a rule above 'otherwise' to change one habit.\notherwise -> default\n",
@@ -113,7 +138,10 @@ static func parse(src: String) -> AiScript:
 		var words := line.split(" ", false)
 		if words[0] == "set":
 			if words.size() != 3 or not Personality.TRAITS.has(words[1]) or not words[2].is_valid_float():
-				sc.errors.append("line %d: 'set' wants a trait and a number 0-1, e.g. set caution 0.8 (traits: %s)" % [n, ", ".join(Personality.TRAITS)])
+				var hint := ""
+				if words.size() >= 2 and not Personality.TRAITS.has(words[1]):
+					hint = _did_you_mean(words[1], Personality.TRAITS)
+				sc.errors.append("line %d: 'set' wants a trait and a number 0-1, e.g. set caution 0.8%s (traits: %s)" % [n, hint, ", ".join(Personality.TRAITS)])
 				continue
 			sc.trait_set[words[1]] = clampf(float(words[2]), 0.0, 1.0)
 			continue
@@ -171,7 +199,7 @@ static func _parse_cond(t: String) -> Dictionary:
 			var name := t.substr(0, i).strip_edges()
 			var num := t.substr(i + op.length()).strip_edges()
 			if not NUMS.has(name):
-				return {"error": "'%s' isn't a number I know (numbers: %s)" % [name, ", ".join(NUMS.keys())]}
+				return {"error": "'%s' isn't a number I know%s (numbers: %s)" % [name, _did_you_mean(name, NUMS.keys()), ", ".join(NUMS.keys())]}
 			if not num.is_valid_float():
 				return {"error": "'%s' should be a number" % num}
 			return {"name": name, "op": op, "num": float(num), "neg": neg}
@@ -179,7 +207,8 @@ static func _parse_cond(t: String) -> Dictionary:
 		return {"name": t, "op": "", "num": 0.0, "neg": neg}
 	if NUMS.has(t):
 		return {"error": "'%s' is a number - compare it, e.g. %s < 40" % [t, t]}
-	return {"error": "don't know '%s' (try: %s)" % [t, ", ".join(BOOLS.keys().slice(0, 10)) + ", ..."]}
+	var dm := _did_you_mean(t, BOOLS.keys() + NUMS.keys())
+	return {"error": "don't know '%s'%s - see the word list, or type a few letters for suggestions" % [t, dm if dm != "" else " (try: %s, ...)" % ", ".join(BOOLS.keys().slice(0, 8))]}
 
 
 static func _parse_action(t: String) -> Dictionary:
@@ -196,11 +225,54 @@ static func _parse_action(t: String) -> Dictionary:
 		if arg == "":
 			arg = "nearest"
 		if not RUSH_TARGETS.has(arg):
-			return {"error": "rush whom? one of: %s" % ", ".join(RUSH_TARGETS)}
+			return {"error": "rush whom?%s one of: %s" % [_did_you_mean(arg, RUSH_TARGETS), ", ".join(RUSH_TARGETS)]}
 		return {"action": "rush", "arg": arg, "lock": lock}
 	if ACTIONS.has(t):
 		return {"action": t, "arg": "", "lock": lock}
-	return {"error": "don't know the action '%s' (actions: %s)" % [t, ", ".join(ACTIONS.keys())]}
+	return {"error": "don't know the action '%s'%s (actions: %s)" % [t, _did_you_mean(t, ACTIONS.keys()), ", ".join(ACTIONS.keys())]}
+
+
+## " - did you mean 'pinned'?" for the closest known word, or "" if nothing is close.
+static func _did_you_mean(w: String, words: Array) -> String:
+	var best := ""
+	var bd := 99
+	for k in words:
+		var d := _edit_distance(w, String(k))
+		if String(k).begins_with(w) and w.length() >= 3:
+			d = mini(d, 1)
+		if d < bd:
+			bd = d
+			best = String(k)
+	if best != "" and bd <= maxi(2, w.length() / 3):
+		return " - did you mean '%s'?" % best
+	return ""
+
+
+static func _edit_distance(a: String, b: String) -> int:
+	var prev: Array[int] = []
+	for j in b.length() + 1:
+		prev.append(j)
+	for i in range(1, a.length() + 1):
+		var cur: Array[int] = [i]
+		for j in range(1, b.length() + 1):
+			var cost := 0 if a[i - 1] == b[j - 1] else 1
+			cur.append(mini(mini(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost))
+		prev = cur
+	return prev[b.length()]
+
+
+## Everything the editor needs for suggestions and lookups, as plain data.
+static func vocab() -> Dictionary:
+	var traits := {}
+	for k in Personality.TRAITS:
+		traits[k] = String(Personality.TRAIT_HELP.get(k, ""))
+	var rush := {}
+	for k in RUSH_TARGETS:
+		rush[k] = "rush the %s enemy" % k if k != "reloading" and k != "aiming" else ("rush a man who is reloading" if k == "reloading" else "rush the man aiming at him")
+	return {"bools": BOOLS, "nums": NUMS, "actions": ACTIONS, "traits": traits, "rush": rush, "examples": EXAMPLES,
+		"keywords": {"when": "starts a rule: when <condition> and ... -> <action>", "and": "both conditions must hold",
+			"not": "flips a yes/no condition: not high", "otherwise": "the catch-all last rule: otherwise -> default",
+			"set": "set <trait> <0-1> for the whole side", "aim": "aim <multiplier>: >1 aims longer and truer", "for": "keep doing it this many seconds: hide for 2"}}
 
 
 ## The first rule that holds for this man, or {} if none does.
