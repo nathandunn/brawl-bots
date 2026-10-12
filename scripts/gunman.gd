@@ -32,7 +32,8 @@ const BLEED := {"gut": 1.1, "arm_r": 1.4, "arm_l": 1.4, "leg_l": 1.4, "leg_r": 1
 const MISFIRE := 0.015      # a bad cap, a cylinder out of line
 const JAM_SCUFFLE := 0.22   # ... much likelier with a man hanging on your gun hand
 const JAM_CLEAR := 1.6      # seconds to work it free, two hands
-const CLINCH := 0.95        # 3 ft: too close to bring a gun to bear - punch, kick or wrestle
+const CLINCH := 0.95        # 3 ft: close enough to grab hold and wrestle
+const NO_SHOOT := 3.0       # nobody fires a gun inside 3 m: close in and fight, back off, or throw something
 const PUNCH_JAM := 0.32     # a punch to a man with his gun up can knock the cylinder out of line
 
 var team := 0
@@ -107,7 +108,8 @@ var punch_wind := -1.0
 var punch_target: Gunman = null
 var holster := false
 # a bottle off the bar or a table: grab it, throw it, or break it over a head
-var has_bottle := false
+var has_bottle := false      # something in his hand to throw: see held_kind
+var held_kind := ""          # "bottle" or "chair"
 var grab_t := -1.0
 var throw_wind := -1.0
 var throw_target: Gunman = null
@@ -119,6 +121,7 @@ var wrestle_t := -1.0
 var wrestle_with: Gunman = null
 var wrestle_lead := false     # he started it; he resolves it
 var _clinch_t := 0.0
+var _band_t := 0.0            # how long he's been stuck inside 3 m without landing a blow
 # going over the rail (or off a roof)
 var falling := false
 var fall_dead := false        # the hit killed him; the fall is only where he lands
@@ -713,6 +716,12 @@ func _physics_process(delta: float) -> void:
 		_traverse(delta)
 		_pose(delta)
 		return
+	# a gunman running in with rounds left pulls up short of 3 m - close enough to shoot, not
+	# so close he can't - unless he's a brawler who wants it hand to hand
+	if path_i < path.size() and gun == "colt" and cylinder > 0 and not jammed and not reloading and p("brawl") < 0.6 and stance in ["rush", "advance", "hunt"]:
+		var ahead := _nearest_enemy_alive(4.2)
+		if ahead != null and flat_dist(ahead.global_position) > NO_SHOOT and visible_enemies.has(ahead):
+			_stop()
 	if wrestle_t >= 0.0:
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -769,8 +778,11 @@ func rule_value(name: String) -> Variant:
 		"leg_hit": return legs_hit() > 0
 		"arm_hit": return arms_hit() > 0
 		"pinned": return suppression > 0.75
-		"has_bottle": return has_bottle
+		"has_bottle": return has_bottle and held_kind == "bottle"
+		"holding": return has_bottle
+		"near_chair": return saloon.chair_within(global_position, 7.0) != null
 		"clinch": return _nearest_enemy_alive(CLINCH) != null
+		"close": return _nearest_enemy_alive(NO_SHOOT) != null
 		"wrestling": return wrestle_t >= 0.0
 		"near_bottle": return saloon.bottle_within(global_position, 7.0) != null
 		"edge": return global_position.y > 1.2 and not saloon.fall_edge(global_position, 1.2).is_empty()
@@ -930,6 +942,21 @@ func _do_rule(r: Dictionary, o: Dictionary) -> bool:
 			_enter("hunt", tag, lock)
 			_go_to(saloon.nearest_node(brain.enemy_home()), 0.0)
 			return true
+		"grab chair":
+			if has_bottle:
+				return false
+			var ch: Node3D = saloon.chair_within(global_position, 7.0)
+			if ch == null:
+				return false
+			if flat_dist(ch.position) < 1.6:
+				grab_t = 0.5 / ab_speed
+				_enter("hold", tag, 0.8)
+				return true
+			var stand := ch.position + flat(global_position - ch.position).normalized() * 0.8
+			stand.y = global_position.y
+			_enter("advance", tag, 2.5)
+			_go_to(saloon.nearest_node(stand), 50.0)
+			return true
 		"grab bottle":
 			if has_bottle:
 				return false
@@ -991,6 +1018,27 @@ func _decide() -> void:
 		else:
 			_enter("brawl", "fists up", 0.0)
 			_stop()
+		return
+	# --- inside 3 m and out of reach: no shooting here, so close in or make room
+	var cl := _nearest_enemy_alive(NO_SHOOT)
+	if cl == null:
+		_band_t = 0.0
+	if cl != null and not cl.falling and wrestle_t < 0.0 and legs_hit() < 2 and not (has_bottle and stance_lock > 0.0):
+		focus = cl
+		_band_t += 0.5
+		# backing off that gets nowhere (a wall, a corner, a man who follows) turns into a fight
+		var keen := minf(_band_t * 0.2, 0.6) + 0.5 * (p("brawl") + p("aggression")) + 0.15 * p("nerve") + (0.35 if melee_first() or total_ammo() == 0 or jammed else 0.0) - (0.25 if cl.melee_first() and not melee_first() else 0.0)
+		if has_bottle:
+			_enter("hold", "throwing", 0.6)
+			_stop()
+		elif keen > 0.5 and can_punch() or legs_hit() > 0:
+			_enter("brawl", "closing in", 0.6)
+			_charge(cl)
+		else:
+			_enter("fall back", "making room to shoot", 0.9)
+			move_mode = "run"
+			var away := global_position + flat(global_position - cl.global_position).normalized() * 3.0
+			_go_to(saloon.nearest_node(away), 40.0)
 		return
 	# --- the side's rule script gets first say (a cowering man isn't reading anything)
 	if not (stance == "cower" and stance_lock > 0.0):
@@ -1647,6 +1695,9 @@ func _traverse(delta: float) -> void:
 			body_root.rotation.x = 0.0
 		if trav_type == "drop" and trav_from.y - trav_to.y > 2.0:
 			manager.sound("thud", global_position, 0.6, -6.0)
+			_land_drop(trav_from.y - trav_to.y)
+			if not alive:
+				return
 		path_i += 1
 		if path_i >= path.size():
 			_arrived()
@@ -1702,14 +1753,18 @@ func _fight(delta: float) -> void:
 		elif wrestle_t < 0.0 and wrestle_lead:
 			_resolve_wrestle()
 		return
-	# --- inside 3 ft: no room to bring a gun (or a throw) to bear
-	var close := _nearest_enemy_alive(CLINCH)
+	# --- inside 3 m: no gunplay. In reach it's fists, boots or wrestling; short of that, throw
+	# what's in his hand (or grab something) - otherwise he closes in or backs off (_decide)
+	var close := _nearest_enemy_alive(NO_SHOOT)
 	if close != null and not close.falling and close.trav_t < 0.0 and knocked_t <= 0.0:
 		aim_target = null
 		fanning = false
-		if stagger_t > 0.0 or punch_cd > 0.0 or not facing(close.global_position, 0.0):
+		if flat_dist(close.global_position) <= reach() + 0.15:
+			if stagger_t > 0.0 or punch_cd > 0.0 or not facing(close.global_position, 0.0):
+				return
+			_close_quarters(close)
 			return
-		_close_quarters(close)
+		_bottle_step(delta)
 		return
 	if near != null:
 		# right in front of him: shoot from the hip, or knock his gun aside and hit him? Decided
@@ -1997,7 +2052,7 @@ func _aim_point(e: Gunman) -> Vector3:
 
 
 func _fire(tgt: Gunman) -> void:
-	if _nearest_enemy_alive(CLINCH) != null:
+	if _nearest_enemy_alive(NO_SHOOT) != null:
 		aim_target = null
 		return
 	crouched = false
@@ -2194,17 +2249,23 @@ func _punch_land() -> void:
 			else:
 				e.take_damage(float(w["dmg"]) * punch_power(), "blunt", self, "bruise", dir)
 		_ when has_bottle:
-			# the bottle over his head
+			# the bottle (or the chair) over his head
+			var was := held_kind
 			_drop_bottle()
+			held_kind = ""
 			stats["bottle_hits"] += 1
-			manager.sound("smash", e.global_position + Vector3(0, 1.7, 0))
-			manager.glass(e.global_position + Vector3(0, 1.7, 0))
-			e.take_damage(16.0 * punch_power(), "bottle", self, "head_blunt", dir)
+			if was == "chair":
+				manager.sound("wood", e.global_position + Vector3(0, 1.6, 0), 0.7, 3.0)
+				manager.sound("thud", e.global_position + Vector3(0, 1.5, 0), 0.7, 0.0)
+			else:
+				manager.sound("smash", e.global_position + Vector3(0, 1.7, 0))
+				manager.glass(e.global_position + Vector3(0, 1.7, 0))
+			e.take_damage((20.0 if was == "chair" else 16.0) * punch_power(), "chair" if was == "chair" else "bottle", self, "head_blunt", dir)
 			if e.alive and e.knocked_t <= 0.0 and not e.falling:
 				e.knock_down(1.6)
 			kd = false
 		_:
-			var dmg2 := (10.0 + 4.0 * p("brawl")) * punch_power()
+			var dmg2 := (12.0 + 5.0 * p("brawl")) * punch_power()
 			manager.sound("thud", e.global_position + Vector3(0, 1.4, 0))
 			e.take_damage(dmg2, "fists", self, "fists", dir)
 	if kd and e.alive and e.knocked_t <= 0.0 and not e.falling:
@@ -2248,7 +2309,7 @@ func _close_quarters(e: Gunman) -> void:
 	var w_punch := (0.5 + 0.3 * p("brawl")) if fists else 0.0
 	var w_kick := (0.25 + 0.35 * ab_jump + (0.2 if family == "ninja" else 0.0)) if legs else 0.0
 	var w_wrestle := 0.0
-	if not melee_first() and arms_hit() < 2 and e.wrestle_t < 0.0 and wrestle_t < 0.0:
+	if not melee_first() and arms_hit() < 2 and e.wrestle_t < 0.0 and wrestle_t < 0.0 and flat_dist(e.global_position) < CLINCH + 0.25:
 		w_wrestle = 0.2 + 0.35 * p("brawl") + (0.25 if e.aim_target == self else 0.0)
 	if melee_first():
 		w_punch = 0.65   # the blade, close
@@ -2345,7 +2406,9 @@ func _bottle_step(delta: float) -> bool:
 	if grab_t >= 0.0:
 		grab_t -= delta
 		if grab_t < 0.0:
-			if saloon.take_bottle(global_position, 1.7) != null:
+			var got := saloon.take_throwable(global_position, 1.7)
+			if not got.is_empty():
+				held_kind = String(got["kind"])
 				has_bottle = true
 				_show_bottle(true)
 				manager.sound("load", global_position + Vector3(0, 1.2, 0), 1.6, -12.0)
@@ -2368,11 +2431,12 @@ func _bottle_step(delta: float) -> bool:
 		throw_wind = 0.34 / ab_speed
 		manager.sound("swing", global_position + Vector3(0, 1.6, 0), 0.8, -6.0)
 		return true
-	if _bottle_cd > 0.0 or saloon.bottles.is_empty():
+	if _bottle_cd > 0.0:
 		return false
 	_bottle_cd = 0.35
 	var keen := _bottle_time() or (p("brawl") > 0.5 and aim_target == null and rng.randf() < 0.3 * p("brawl") * (1.0 - 0.5 * p("discipline")))
-	if not keen or saloon.bottle_near(global_position, 1.7) == null or _bottle_target() == null:
+	var cand := saloon.throwable_near(global_position, 1.7)
+	if not keen or cand.is_empty() or _bottle_target(String(cand["kind"])) == null:
 		return false
 	aim_target = null
 	grab_t = 0.4 / ab_speed
@@ -2388,14 +2452,17 @@ func _bottle_time() -> bool:
 	return _melee_target() == null
 
 
-func _bottle_target() -> Gunman:
+func _bottle_target(kind := "") -> Gunman:
+	if kind == "":
+		kind = held_kind
+	var far := 8.0 if kind == "chair" else 13.0
 	var best: Gunman = null
 	var bv := -INF
 	for e in visible_enemies:
 		if not is_instance_valid(e) or not e.alive or e.falling:
 			continue
 		var d := flat_dist(e.global_position)
-		if d < 2.2 or d > 13.0:
+		if d < reach() + 0.2 or d > far:
 			continue
 		if not saloon.line_clear(muzzle(), e.global_position + Vector3(0, e.height() * 0.85, 0)):
 			continue
@@ -2413,19 +2480,27 @@ func _throw_bottle() -> void:
 	throw_target = null
 	if not has_bottle:
 		return
+	var kind0 := held_kind
 	_drop_bottle()
+	held_kind = kind0
 	if t == null or not is_instance_valid(t) or not t.alive:
+		held_kind = ""
 		return
 	var sigma := BASE_SIGMA * 2.0 / ab_aim * gun_hand_penalty() * (1.6 if is_moving() else 1.0) * (1.0 + 0.8 * minf(suppression, 1.0))
 	stats["bottles"] += 1
-	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * 0.86, 0), sigma)
+	var kind := held_kind
+	held_kind = ""
+	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * (0.86 if kind == "bottle" else 0.6), 0), sigma * (1.3 if kind == "chair" else 1.0), kind)
 
 
 ## Off a table or the bar within `r`, while there's nobody right on him: go and get it.
 func _go_for_bottle(r: float) -> bool:
-	if saloon.bottles.is_empty() or legs_hit() >= 2:
+	if legs_hit() >= 2:
 		return false
-	var b := saloon.bottle_within(global_position, r)
+	var b: Node3D = saloon.bottle_within(global_position, r)
+	var ch: Node3D = saloon.chair_within(global_position, r)
+	if b == null or (ch != null and flat_dist(ch.position) < flat_dist(b.position)):
+		b = ch
 	if b == null:
 		return false
 	if _nearest_enemy_alive(3.0) != null:
@@ -2436,15 +2511,28 @@ func _go_for_bottle(r: float) -> bool:
 	var id := saloon.nearest_node(stand)
 	if id < 0 or saloon.node_pos(id).distance_to(stand) > 1.6:
 		return false
-	_enter("advance", "after a bottle", 2.5)
+	_enter("advance", "after a chair" if not (b is MeshInstance3D) else "after a bottle", 2.5)
 	move_mode = "run"
 	_go_to(id, 50.0)
 	return true
 
 
+var chair_held: Node3D = null
+
+
 func _show_bottle(on: bool) -> void:
 	if body_root == null or arm_l == null:
 		return
+	if held_kind == "chair" or (not on and chair_held != null):
+		if on and chair_held == null:
+			chair_held = Saloon.chair_mesh(saloon.mat("wood"), saloon.mat("dark"))
+			chair_held.position = Vector3(0, 1.75, -0.35)
+			chair_held.rotation = Vector3(PI, 0, 0)
+			body_root.add_child(chair_held)
+		if chair_held != null:
+			chair_held.visible = on
+		if held_kind == "chair":
+			return
 	if on and bottle_mi == null:
 		bottle_mi = MeshInstance3D.new()
 		var cm := CylinderMesh.new()
@@ -2473,7 +2561,7 @@ func _drop_bottle() -> void:
 func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 	if falling or trav_t >= 0.0 or global_position.y < 1.2:
 		return false
-	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw"]
+	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw", "chair"]
 	var toward := flat(dir).normalized() if shove and flat(dir).length() > 0.01 else Vector3.ZERO
 	# a dying man staggers a step or two before he goes; a blow drives a man back a good stride
 	var e := saloon.fall_edge(global_position, 1.5 if fatal else (1.6 if shove else 0.9), toward)
@@ -2487,7 +2575,7 @@ func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 			chance = 0.95 if fatal else 0.3 + 0.25 * (by.punch_power() if by != null and is_instance_valid(by) else 1.0)
 		"blunt", "bottle":
 			chance = 0.95 if fatal else 0.5
-		"kick", "throw":
+		"kick", "throw", "chair":
 			chance = 0.95 if fatal else 0.6
 		"blade":
 			chance = 0.9 if fatal else 0.3
@@ -2534,6 +2622,28 @@ func _start_fall(e: Dictionary, by: Gunman, how: String, fatal: bool) -> void:
 	if not fatal:
 		say("die")
 	brain.log_event("%s goes %s!" % [gm_name, "through the rail" if bool(e["rail"]) else "over the edge"], true)
+
+
+## Jumped down off a deck on purpose: over 2 m he lands hard and goes down; a better jumper
+## less so. It can cost a leg.
+func _land_drop(h: float) -> void:
+	var sev := maxf(h - 1.8, 0.0) * (1.0 - 0.6 * ab_jump)
+	stats["drop_hurts"] = int(stats.get("drop_hurts", 0)) + 1
+	hp -= 7.0 * sev
+	if rng.randf() < 0.35 * sev:
+		var leg := "leg_r" if rng.randf() < 0.5 else "leg_l"
+		wounds[leg] += 1
+		stats["wounds"].append(leg)
+		_wound_visual(leg)
+		say("leg")
+	if hp <= 0.0:
+		hp = 0.0
+		stats["death_part"] = "fall"
+		stats["death_how"] = "fall"
+		_die(null, "fall", Vector3.DOWN)
+		return
+	knock_down(0.6 + 0.7 * sev)
+	_update_label()
 
 
 ## Down. From the balcony (3 m and more) it's the end of him; off a lower roof he's winded,

@@ -49,7 +49,8 @@ var spawn_rects: Array[Rect2] = [Rect2(), Rect2()]
 var spawns: Array = [[], []]
 var tables: Array[Table] = []
 var bottles: Array[MeshInstance3D] = []
-var rail_posts: Array[MeshInstance3D] = []   # the balusters, so a man can go through them
+var rail_posts: Array[MeshInstance3D] = []
+var chairs: Array[Node3D] = []               # saloon chairs: pick one up and throw it   # the balusters, so a man can go through them
 var _splinters: Array[Node3D] = []
 var env := {}                          # lighting for main.gd
 
@@ -375,6 +376,15 @@ func _table(c: Vector2) -> void:
 	tables.append(tb)
 	_circ_obs(c, 0.62, 0.8, 0, true, "table")
 	tb.obstacle_index = obstacles.size() - 1
+	# two chairs at every saloon table
+	if map_id == "saloon":
+		for k in 2:
+			var ang := float(k) * PI + c.x * 0.7
+			var ch := Saloon.chair_mesh(_mats["wood"], _mats["dark"])
+			ch.position = Vector3(c.x + cos(ang) * 0.95, 0.0, c.y + sin(ang) * 0.95)
+			ch.rotation.y = -ang - PI * 0.5
+			add_child(ch)
+			chairs.append(ch)
 	# a bottle or two on every table, for drinking or throwing
 	var n := 1 + (1 if (int(absf(c.x * 7.0 + c.y * 3.0)) % 2) == 0 else 0)
 	for k in n:
@@ -902,7 +912,7 @@ func _under_deck(p: Vector2, ylo: float, yhi: float, own: int) -> bool:
 
 
 func _make_graph(cls: int) -> AStar3D:
-	var a := AStar3D.new()
+	var a := NavAStar.new()
 	for i in nodes.size():
 		if not nodes[i].get("dead", false):
 			a.add_point(i, nodes[i]["pos"])
@@ -913,6 +923,10 @@ func _make_graph(cls: int) -> AStar3D:
 		var l: Dictionary = links[k]
 		if int(l["cls"]) <= cls and a.has_point(k.x) and a.has_point(k.y):
 			a.connect_points(k.x, k.y, false)
+			if String(l["type"]) == "drop":
+				var dy: float = (nodes[k.x]["pos"] as Vector3).y - (nodes[k.y]["pos"] as Vector3).y
+				# a drop that lands hard (see Gunman._land_drop) is a last resort
+				a.penalty[k] = 0.0 if dy < 1.4 else (4.0 if dy < 2.0 else 30.0 + 6.0 * dy)
 	return a
 
 
@@ -1089,6 +1103,8 @@ func reset_props() -> void:
 		b.visible = true
 	for rp in rail_posts:
 		rp.visible = true
+	for ch in chairs:
+		ch.visible = true
 	for sp in _splinters:
 		if is_instance_valid(sp):
 			sp.queue_free()
@@ -1145,6 +1161,55 @@ func take_bottle(p: Vector3, reach: float) -> MeshInstance3D:
 	if b != null:
 		b.visible = false
 	return b
+
+
+## A plain wooden chair, seat at knee height. Built in code; the same model is carried and thrown.
+static func chair_mesh(wood: Material, dark: Material) -> Node3D:
+	var n := Node3D.new()
+	var parts := [[Vector3(0.44, 0.05, 0.42), Vector3(0, 0.46, 0), wood], [Vector3(0.44, 0.42, 0.04), Vector3(0, 0.7, -0.19), wood]]
+	for lx in [-0.19, 0.19]:
+		for lz in [-0.18, 0.18]:
+			parts.append([Vector3(0.04, 0.46, 0.04), Vector3(lx, 0.23, lz), dark])
+	for pr in parts:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = pr[0]
+		mi.mesh = bm
+		mi.position = pr[1]
+		mi.material_override = pr[2]
+		n.add_child(mi)
+	return n
+
+
+func chair_within(p: Vector3, r: float) -> Node3D:
+	var best: Node3D = null
+	var bd := r
+	for ch in chairs:
+		if not ch.visible or absf(ch.position.y - p.y) > 0.6:
+			continue
+		var d := Vector2(ch.position.x - p.x, ch.position.z - p.z).length()
+		if d < bd:
+			bd = d
+			best = ch
+	return best
+
+
+## Whatever a man at `p` could pick up and throw: {"node", "kind"} or {}.
+func throwable_near(p: Vector3, reach: float) -> Dictionary:
+	var b := bottle_near(p, reach)
+	var ch := chair_within(p, reach)
+	if ch != null and (b == null or Vector2(ch.position.x - p.x, ch.position.z - p.z).length() < Vector2(b.position.x - p.x, b.position.z - p.z).length()):
+		return {"node": ch, "kind": "chair"}
+	if b != null:
+		return {"node": b, "kind": "bottle"}
+	return {}
+
+
+func take_throwable(p: Vector3, reach: float) -> Dictionary:
+	var t := throwable_near(p, reach)
+	if not t.is_empty():
+		(t["node"] as Node3D).visible = false
+	return t
 
 
 ## A table going over takes its bottles with it.

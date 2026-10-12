@@ -33,13 +33,15 @@ yours to rewrite. Part of the [Precog sim suite](https://apps.precogsoftwareserv
 
 - Last side standing wins. Three-second standoff. At **2:00** the side with more men standing wins
   on decision; level, it's **sudden death** - next man down loses it.
-- **Vital hits kill:** head or heart. Gut shots hurt badly and bleed. Arm and leg hits cost little
+- **Vital hits kill, always:** head or heart - slug, blade or star. Gut shots hurt badly and bleed. Arm and leg hits cost little
   blood but cripple: the gun hand goes to the off hand, reloads and blows slow, both arms and he
   can't punch; one leg is a limp, both and he crawls. **Every wound bleeds** - one is about a
   minute from death, two about half that. Blood pools on the floor and men can **slip** in it.
 - **Aim time is accuracy:** spread x(1 + 2.2 e^(-t/0.42)). Six in the Colt, **18 rounds** in all,
   then fists. Guns **jam**, especially in a scuffle; a punch to a raised gun can jam it.
-- **Inside 3 feet nobody shoots:** there's no room to level a Colt (or throw a star). Men punch,
+- **Inside 3 m nobody shoots.** A gunman running in pulls up short of it to fire; a man caught
+  inside it closes in to fight, backs off to make room, or throws whatever he has - a bottle or a
+  chair. In arm's reach men punch,
   kick (a boot drives a man back a stride and can drop him - or send him over the rail) or grab
   hold and wrestle: both locked a second or two, guns liable to jam, until one throws the other
   down. Blade- and staff-men still swing, short, and kick.

@@ -21,7 +21,7 @@ const TEAM_NAMES := ["Outlaws", "Law"]           # (defaults; the live names are
 const TEAM_WINS := ["The Outlaws win", "The Law wins"]
 const TEAM_COLORS := [Color(0.72, 0.2, 0.16), Color(0.3, 0.42, 0.62)]
 ## A throwing star where it lands: it rarely kills outright, but it always bleeds.
-const STAR_DMG := {"head": 55.0, "heart": 45.0, "gut": 18.0, "arm_r": 8.0, "arm_l": 8.0, "leg_l": 8.0, "leg_r": 8.0}
+const STAR_DMG := {"head": 999.0, "heart": 999.0, "gut": 18.0, "arm_r": 8.0, "arm_l": 8.0, "leg_l": 8.0, "leg_r": 8.0}
 const STAR_SPEED := 24.0
 const BOTTLE_SPEED := 13.0
 const STANDOFF_LINES := {"saloon": "The piano stops. Nobody draws for %d seconds...", "dojo": "The fighters bow. %d breaths...",
@@ -497,7 +497,8 @@ func throw_star(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 ## A bottle thrown at a man's head: slow enough to see coming, it rings a skull (a knockdown)
 ## and bruises anything else - and it smashes whatever it hits, including the bottles on the
 ## shelf.
-func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
+func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float, kind := "bottle") -> Dictionary:
+	var chair := kind == "chair"
 	var from := thrower.muzzle() + Vector3(0, 0.2, 0)
 	var dir := (aim - from).normalized()
 	var right := dir.cross(Vector3.UP)
@@ -524,14 +525,18 @@ func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 			hit_y = r.y
 	if victim != null:
 		stop = from + dir * best_t
-	var flight := from.distance_to(stop) / BOTTLE_SPEED
-	_bottle_visual(from, stop, flight)
+	var flight := from.distance_to(stop) / (9.0 if chair else BOTTLE_SPEED)
+	_bottle_visual(from, stop, flight, chair)
 	var v := victim
 	var at := stop
 	var hy := hit_y
 	_pending.append([elapsed + flight, func():
-		sound("smash", at)
-		_glass(at)
+		if chair:
+			sound("wood", at, 0.7, 3.0)
+			_dust(at)
+		else:
+			sound("smash", at)
+			_glass(at)
 		saloon.bottle_hit(at)
 		if v == null or not is_instance_valid(v) or not v.alive or v.falling:
 			return
@@ -546,13 +551,16 @@ func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 			thrower.stats["bottle_hits"] += 1
 		last_damage_t = elapsed
 		var by: Gunman = thrower if is_instance_valid(thrower) else null
+		var how := "chair" if chair else "bottle"
 		if part == "head":
-			v.take_damage(16.0 * rng.randf_range(0.85, 1.15), "bottle", by, "head_blunt", dir)
+			v.take_damage((22.0 if chair else 16.0) * rng.randf_range(0.85, 1.15), how, by, "head_blunt", dir)
 			if v.alive and v.knocked_t <= 0.0 and not v.falling:
-				v.knock_down(1.6)
+				v.knock_down(1.8 if chair else 1.6)
 		else:
-			v.take_damage(7.0 * rng.randf_range(0.85, 1.15), "bottle", by, "bruise", dir)
-			if v.alive:
+			v.take_damage((12.0 if chair else 7.0) * rng.randf_range(0.85, 1.15), how, by, "bruise", dir)
+			if chair and v.alive and not v.falling and v.knocked_t <= 0.0 and rng.randf() < 0.55:
+				v.knock_down(1.3)
+			elif v.alive:
 				v.stagger_t = maxf(v.stagger_t, 0.45)
 				v.suppression = minf(1.5, v.suppression + 0.4)
 	])
@@ -564,17 +572,22 @@ func glass(at: Vector3) -> void:
 	_glass(at)
 
 
-func _bottle_visual(a: Vector3, b: Vector3, t: float) -> void:
+func _bottle_visual(a: Vector3, b: Vector3, t: float, chair := false) -> void:
 	if headless:
 		return
-	var mi := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = 0.03
-	cm.bottom_radius = 0.055
-	cm.height = 0.3
-	cm.radial_segments = 8
-	mi.mesh = cm
-	mi.material_override = saloon.mat("glass_g")
+	var mi: Node3D
+	if chair:
+		mi = Saloon.chair_mesh(saloon.mat("wood"), saloon.mat("dark"))
+	else:
+		var bmi := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.03
+		cm.bottom_radius = 0.055
+		cm.height = 0.3
+		cm.radial_segments = 8
+		bmi.mesh = cm
+		bmi.material_override = saloon.mat("glass_g")
+		mi = bmi
 	mi.position = a
 	world.add_child(mi)
 	var tt := maxf(t, 0.05)

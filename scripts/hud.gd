@@ -777,6 +777,8 @@ func _fate(m: Dictionary) -> String:
 		how = "beaten down"
 	elif dh == "bottle":
 		how = "brained with a bottle"
+	elif dh == "chair":
+		how = "laid out with a chair"
 	elif dh == "kick":
 		how = "kicked to death"
 	elif dh == "throw":
