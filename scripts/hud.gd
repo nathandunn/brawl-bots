@@ -673,8 +673,8 @@ func show_result(res: Dictionary) -> void:
 				parts.append("%s %ds" % [k, int(pl[k])])
 		results_box.add_child(_lbl("%s - %s / %s. Plans: %s" % [manager.team_names[t], res["doctrines"][t], res["presets"][t], ", ".join(parts)], 13, manager.team_colors[t].lightened(0.35)))
 	_next_row()
-	var g := _grid(13)
-	for h in ["Man", "Kind", "Grade", "Kills", "Shots", "Acc", "Avg aim", "Vital", "Melee", "Def", "Mostly", "Wounds", "Fate"]:
+	var g := _grid(14)
+	for h in ["Man", "Kind", "Grade", "Kills", "Died", "Shots", "Acc", "Avg aim", "Vital", "Melee", "Def", "Mostly", "Wounds", "Fate"]:
 		_cell(g, h, Color(1, 0.85, 0.55))
 	for m in res["men"]:
 		var col: Color = manager.team_colors[int(m["team"])].lightened(0.35)
@@ -682,6 +682,7 @@ func show_result(res: Dictionary) -> void:
 		_cell(g, String(m["preset"]))
 		_cell(g, Roster.grade_name(String(m.get("grade", "Regular")), String(m.get("faction", "outlaws"))))
 		_cell(g, str(m["kills"]))
+		_cell(g, "-" if m["alive"] else "%d:%02d" % [int(m["died_at"]) / 60, int(m["died_at"]) % 60])
 		_cell(g, str(m["shots"]))
 		_cell(g, _pct(m["hits"], m["shots"]))
 		_cell(g, "%.2fs" % (float(m["aim_sum"]) / maxf(float(m["shots"]), 1.0)))
@@ -691,6 +692,12 @@ func show_result(res: Dictionary) -> void:
 		_cell(g, _top_modes(m.get("modes", {})))
 		_cell(g, _wound_text(m.get("wounds", [])))
 		_cell(g, _fate(m))
+	var tk := [0, 0]
+	var td := [0, 0]
+	for m in res["men"]:
+		tk[int(m["team"])] += int(m["kills"])
+		td[int(m["team"])] += 0 if m["alive"] else 1
+	results_box.add_child(_lbl("Kills - deaths: %s %d-%d, %s %d-%d (deaths nobody is credited with: bled out from a stray wound, a fall)" % [manager.team_names[0], tk[0], td[0], manager.team_names[1], tk[1], td[1]], 13))
 	_rules_fired(res["men"])
 	results_box.add_child(_lbl("How it went", 15, Color(1, 0.85, 0.55)))
 	for e in res["events"]:
@@ -808,11 +815,11 @@ func show_batch(summary: Dictionary) -> void:
 	var g := _grid(3)
 	for h in ["", String(tn[0]), String(tn[1])]:
 		_cell(g, h, Color(1, 0.85, 0.55))
-	var rows := [["Kills", "kills"], ["Shots", "shots"], ["Hits", "hits"], ["Head shots", "heads"], ["Hits on men in cover", "deny"], ["Hits from the balcony", "high"], ["Fist kills", "fist_kills"], ["Tables flipped", "flips"]]
+	var rows := [["Kills", "kills"], ["Deaths", "team_deaths"], ["Shots", "shots"], ["Hits", "hits"], ["Head shots", "heads"], ["Hits on men in cover", "deny"], ["Hits from the balcony", "high"], ["Fist kills", "fist_kills"], ["Tables flipped", "flips"]]
 	for r in rows:
 		_cell(g, r[0])
 		for t in 2:
-			_cell(g, str(int(d[r[1]][t])))
+			_cell(g, str(int(d.get(r[1], [0, 0])[t])))
 	_cell(g, "Accuracy")
 	for t in 2:
 		_cell(g, _pct(int(d["hits"][t]), int(d["shots"][t])))
@@ -849,14 +856,15 @@ func show_batch(summary: Dictionary) -> void:
 			dps.append("%s %d" % [k, deaths[k]])
 		results_box.add_child(_lbl("How men died: " + ", ".join(dps), 13))
 	results_box.add_child(_lbl("By personality", 15, Color(1, 0.85, 0.55)))
-	var pg := _grid(5)
-	for h in ["Kind", "Men", "Kills/man", "Survived", "Acc"]:
+	var pg := _grid(6)
+	for h in ["Kind", "Men", "Kills/man", "Deaths/man", "Survived", "Acc"]:
 		_cell(pg, h, Color(1, 0.85, 0.55))
 	for k in d["by_preset"]:
 		var b: Dictionary = d["by_preset"][k]
 		_cell(pg, String(k))
 		_cell(pg, str(b["n"]))
 		_cell(pg, "%.2f" % (float(b["kills"]) / maxf(b["n"], 1)))
+		_cell(pg, "%.2f" % (float(b["deaths"]) / maxf(b["n"], 1)))
 		_cell(pg, _pct(int(b["n"]) - int(b["deaths"]), int(b["n"])))
 		_cell(pg, _pct(int(b["hits"]), int(b["shots"])))
 	results_overlay.visible = true

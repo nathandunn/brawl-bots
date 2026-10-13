@@ -13,6 +13,7 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 	var hits := [0, 0]
 	var heads := [0, 0]
 	var kills := [0, 0]
+	var tdeaths := [0, 0]
 	var fist_kills := [0, 0]
 	var deny := [0, 0]
 	var high := [0, 0]
@@ -51,6 +52,7 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 			hits[t] += int(m["hits"])
 			heads[t] += int(m["heads"])
 			kills[t] += int(m["kills"])
+			tdeaths[t] += 0 if m["alive"] else 1
 			fist_kills[t] += int(m["fist_kills"])
 			deny[t] += int(m["deny_hits"])
 			high[t] += int(m["high_hits"])
@@ -136,9 +138,9 @@ static func summarize(results: Array[Dictionary]) -> Dictionary:
 	for t in 2:
 		txt += "%s melee hits %d kills %d, blocks %d parries %d dodges %d, jumps %d, stars %d/%d, thrown %d/%d (chairs %d, knives %d), kicks %d/%d, wrestles %d (throws %d), went over the edge %d (fall kills %d). " % [String(tn[t]), melee[t]["hits"], melee[t]["kills"], melee[t]["blocks"], melee[t]["parries"], melee[t]["dodges"], melee[t]["jumps"], melee[t]["star_hits"], melee[t]["stars"], melee[t].get("bottle_hits", 0), melee[t].get("bottles", 0), melee[t].get("chairs", 0), melee[t].get("knives", 0), melee[t].get("kick_hits", 0), melee[t].get("kicks", 0), melee[t].get("wrestles", 0), melee[t].get("throws", 0), melee[t].get("falls", 0), melee[t].get("fall_kills", 0)]
 	for t in 2:
-		txt += "%s acc %d%% heads %d deny %d high %d fistkills %d flips %d ff %d. " % [String(tn[t]), int(100.0 * hits[t] / maxf(shots[t], 1)), heads[t], deny[t], high[t], fist_kills[t], flips[t], int(ff[t])]
+		txt += "%s deaths %d acc %d%% heads %d deny %d high %d fistkills %d flips %d ff %d. " % [String(tn[t]), tdeaths[t], int(100.0 * hits[t] / maxf(shots[t], 1)), heads[t], deny[t], high[t], fist_kills[t], flips[t], int(ff[t])]
 	return {"text": txt, "data": {"matches": results.size(), "wins": wins, "draws": draws, "avg_duration": dur / n,
-		"first_blood": fb / n, "reasons": reasons, "shots": shots, "hits": hits, "heads": heads, "kills": kills,
+		"first_blood": fb / n, "reasons": reasons, "shots": shots, "hits": hits, "heads": heads, "kills": kills, "team_deaths": tdeaths,
 		"fist_kills": fist_kills, "deny": deny, "high": high, "flips": flips, "ff": ff, "plans": plans,
 		"by_preset": by_preset, "doctrines": docs, "presets": pres, "modes": modes, "mode_events": events, "aimb": aimb, "aimr": aimr, "deaths": deaths, "wounds": wounds, "team_names": tn, "melee": melee, "rules": rules}}
 
