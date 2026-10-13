@@ -335,7 +335,7 @@ func _build_body() -> void:
 	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	fmat.albedo_color = Color(1.0, 0.85, 0.4)
 	flash_mi.material_override = fmat
-	flash_mi.position = Vector3(0, -0.66, -0.32)
+	flash_mi.position = Vector3(0, -0.94, -0.05)
 	flash_mi.visible = false
 	arm_r.add_child(flash_mi)
 	label = Label3D.new()
@@ -359,7 +359,7 @@ func _build_weapon() -> void:
 	weapon_root.position = Vector3(0, -0.6, 0)
 	arm_r.add_child(weapon_root)
 	if gun == "colt":
-		gun_mi = _mesh_box(Vector3(0.06, 0.12, 0.3), Vector3(0, -0.02, -0.1), _m(Color(0.15, 0.15, 0.17), 0.35), weapon_root)
+		_build_revolver()
 		return
 	match melee:
 		"katana":
@@ -375,6 +375,55 @@ func _build_weapon() -> void:
 			gun_mi = _mesh_box(Vector3(0.05, 0.05, 1.9), Vector3(0, 0, -0.3), wood, weapon_root)
 		_:
 			gun_mi = _mesh_box(Vector3(0.01, 0.01, 0.01), Vector3.ZERO, dark, weapon_root)
+
+
+## A Colt single-action six-shooter, in the hand: barrel on along the arm, the fluted cylinder,
+## the hammer, the trigger guard and a walnut grip dropping below the hand. Everything hangs off
+## gun_mi so it hides and changes hands as one.
+func _build_revolver() -> void:
+	var blued := _m(Color(0.16, 0.16, 0.19), 0.3)
+	var steel := _m(Color(0.42, 0.43, 0.47), 0.25)
+	var walnut := _m(Color(0.36, 0.2, 0.1), 0.7)
+	# frame: the hand's at the origin; "forward" when aimed is -Y here, "down" is +Z
+	gun_mi = _mesh_box(Vector3(0.034, 0.1, 0.05), Vector3(0, -0.66, -0.02), blued, arm_r)
+	gun_mi.scale = Vector3.ONE * 1.5   # a touch larger than life, so it reads at fighting distance
+	# barrel
+	var bm := CylinderMesh.new()
+	bm.top_radius = 0.013
+	bm.bottom_radius = 0.013
+	bm.height = 0.13
+	bm.radial_segments = 10
+	var barrel := MeshInstance3D.new()
+	barrel.mesh = bm
+	barrel.material_override = blued
+	barrel.position = Vector3(0, -0.105, -0.022)
+	gun_mi.add_child(barrel)
+	# ejector rod housing under the barrel
+	var rod := _mesh_box(Vector3(0.012, 0.085, 0.012), Vector3(0, -0.085, 0.0), blued, gun_mi)
+	rod.name = "rod"
+	# the cylinder, six chambers round it
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.036
+	cm.bottom_radius = 0.036
+	cm.height = 0.055
+	cm.radial_segments = 12
+	var cyl := MeshInstance3D.new()
+	cyl.mesh = cm
+	cyl.material_override = steel
+	cyl.position = Vector3(0, -0.01, -0.012)
+	gun_mi.add_child(cyl)
+	for k in 6:
+		var a := TAU * k / 6.0
+		var ch := _mesh_box(Vector3(0.008, 0.058, 0.008), Vector3(cos(a) * 0.024, -0.01, -0.012 + sin(a) * 0.024), blued, gun_mi)
+		ch.name = "flute%d" % k
+	# hammer spur, trigger and guard
+	_mesh_box(Vector3(0.012, 0.03, 0.025), Vector3(0, 0.045, -0.04), blued, gun_mi)
+	_mesh_box(Vector3(0.006, 0.012, 0.03), Vector3(0, 0.0, 0.035), steel, gun_mi)
+	var guard := _mesh_box(Vector3(0.008, 0.05, 0.008), Vector3(0, -0.005, 0.055), steel, gun_mi)
+	guard.name = "guard"
+	# walnut grip, raked back below the hand
+	var grip := _mesh_box(Vector3(0.03, 0.045, 0.12), Vector3(0, 0.05, 0.065), walnut, gun_mi)
+	grip.rotation.x = 0.35
 
 
 static var _star_mat: StandardMaterial3D
@@ -782,7 +831,7 @@ func rule_value(name: String) -> Variant:
 		"holding": return has_bottle
 		"near_chair": return saloon.chair_within(global_position, 7.0) != null
 		"clinch": return _nearest_enemy_alive(CLINCH) != null
-		"close": return _nearest_enemy_alive(NO_SHOOT) != null
+		"close": return _close_enemy() != null
 		"wrestling": return wrestle_t >= 0.0
 		"near_bottle": return saloon.bottle_within(global_position, 7.0) != null
 		"edge": return global_position.y > 1.2 and not saloon.fall_edge(global_position, 1.2).is_empty()
@@ -1020,7 +1069,7 @@ func _decide() -> void:
 			_stop()
 		return
 	# --- inside 3 m and out of reach: no shooting here, so close in or make room
-	var cl := _nearest_enemy_alive(NO_SHOOT)
+	var cl := _close_enemy()
 	if cl == null:
 		_band_t = 0.0
 	if cl != null and not cl.falling and wrestle_t < 0.0 and legs_hit() < 2 and not (has_bottle and stance_lock > 0.0):
@@ -1031,14 +1080,23 @@ func _decide() -> void:
 		if has_bottle:
 			_enter("hold", "throwing", 0.6)
 			_stop()
-		elif keen > 0.5 and can_punch() or legs_hit() > 0:
-			_enter("brawl", "closing in", 0.6)
-			_charge(cl)
 		else:
-			_enter("fall back", "making room to shoot", 0.9)
-			move_mode = "run"
-			var away := global_position + flat(global_position - cl.global_position).normalized() * 3.0
-			_go_to(saloon.nearest_node(away), 40.0)
+			var away := global_position + flat(global_position - cl.global_position).normalized() * 3.2
+			var back_id := saloon.nearest_node(away)
+			# nowhere to back off to (a wall, the bar, a corner): then it's a fight
+			var can_back := back_id >= 0 and flat_dist(saloon.node_pos(back_id)) > 1.5 and saloon.node_pos(back_id).distance_to(cl.global_position) > NO_SHOOT
+			if (keen > 0.5 and can_punch()) or legs_hit() > 0 or not can_back:
+				_enter("brawl", "closing in", 0.6)
+				move_mode = "sprint"
+				# the line is clear: straight at him
+				path = PackedVector3Array([cl.global_position])
+				path_ids = PackedInt64Array()
+				path_i = 0
+				goal_id = -1
+			else:
+				_enter("fall back", "making room to shoot", 0.9)
+				move_mode = "run"
+				_go_to(back_id, 40.0)
 		return
 	# --- the side's rule script gets first say (a cowering man isn't reading anything)
 	if not (stance == "cower" and stance_lock > 0.0):
@@ -1496,6 +1554,23 @@ func _nearest_enemy_alive(r: float) -> Gunman:
 	return best
 
 
+## The nearest enemy inside 3 m that he could actually get at - nothing solid (the bar, a
+## flipped table, a wall) between their knees. Across the bar it's still a gunfight.
+func _close_enemy() -> Gunman:
+	var best: Gunman = null
+	var bd := NO_SHOOT
+	for e in manager.alive_gunmen():
+		if e.team == team or e.falling:
+			continue
+		if absf(e.global_position.y - global_position.y) > 1.2:
+			continue
+		var d := flat_dist(e.global_position)
+		if d < bd and saloon.line_clear(global_position + Vector3(0, 0.45, 0), e.global_position + Vector3(0, 0.45, 0)):
+			bd = d
+			best = e
+	return best
+
+
 # ---------------------------------------------------------------- moving
 
 func _move(delta: float) -> void:
@@ -1755,7 +1830,7 @@ func _fight(delta: float) -> void:
 		return
 	# --- inside 3 m: no gunplay. In reach it's fists, boots or wrestling; short of that, throw
 	# what's in his hand (or grab something) - otherwise he closes in or backs off (_decide)
-	var close := _nearest_enemy_alive(NO_SHOOT)
+	var close := _close_enemy()
 	if close != null and not close.falling and close.trav_t < 0.0 and knocked_t <= 0.0:
 		aim_target = null
 		fanning = false
@@ -2052,7 +2127,7 @@ func _aim_point(e: Gunman) -> Vector3:
 
 
 func _fire(tgt: Gunman) -> void:
-	if _nearest_enemy_alive(NO_SHOOT) != null:
+	if _close_enemy() != null:
 		aim_target = null
 		return
 	crouched = false
@@ -2434,7 +2509,10 @@ func _bottle_step(delta: float) -> bool:
 	if _bottle_cd > 0.0:
 		return false
 	_bottle_cd = 0.35
-	var keen := _bottle_time() or (p("brawl") > 0.5 and aim_target == null and rng.randf() < 0.3 * p("brawl") * (1.0 - 0.5 * p("discipline")))
+	# anybody passing a table or the bar with a man in throwing range may pick something up; a
+	# brawler likes to, a disciplined man less; inside 3 m (no shooting) everyone does
+	var in_band := _close_enemy() != null
+	var keen := _bottle_time() or in_band or (aim_target == null and rng.randf() < (0.22 + 0.35 * p("brawl")) * (1.0 - 0.5 * p("discipline")))
 	var cand := saloon.throwable_near(global_position, 1.7)
 	if not keen or cand.is_empty() or _bottle_target(String(cand["kind"])) == null:
 		return false
@@ -2490,6 +2568,8 @@ func _throw_bottle() -> void:
 	stats["bottles"] += 1
 	var kind := held_kind
 	held_kind = ""
+	if kind == "chair":
+		stats["chairs"] = int(stats.get("chairs", 0)) + 1
 	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * (0.86 if kind == "bottle" else 0.6), 0), sigma * (1.3 if kind == "chair" else 1.0), kind)
 
 
@@ -2988,9 +3068,13 @@ func _pose(delta: float) -> void:
 		body_root.rotation.x = 0.0
 
 
+var _celebrate_phase := 0.0
+
+
 func celebrate() -> void:
 	celebrating = true
 	_celebrate_t = rng.randf() * 0.3
+	_celebrate_phase = rng.randf() * 1.6
 	aim_target = null
 	crouched = false
 	velocity = Vector3.ZERO
@@ -3008,12 +3092,22 @@ func _celebrate(delta: float) -> void:
 	if body_root == null:
 		return
 	var t := _celebrate_t
-	# fire twice into the ceiling, then a jig, hat in the air on the beat
-	if t < 2.0:
-		arm_r.rotation.x = lerpf(arm_r.rotation.x, 3.0, clampf(delta * 8.0, 0, 1))
-		if (t > 0.5 and t - delta <= 0.5) or (t > 1.3 and t - delta <= 1.3):
-			_flash()
-			manager.sound("shot", global_position + Vector3(0, 2.2, 0), 1.0, -4.0)
+	# shots into the air and bottles flung up, over and over, with a jig between
+	var beat_t := fmod(t + _celebrate_phase, 1.6)
+	var prev_t := fmod(t - delta + _celebrate_phase, 1.6)
+	var shoot := beat_t < 0.6
+	arm_r.rotation.x = lerpf(arm_r.rotation.x, 3.0 if shoot or gun == "" else 2.6, clampf(delta * 8.0, 0, 1))
+	if gun == "colt" and prev_t < 0.3 and beat_t >= 0.3:
+		_flash()
+		manager.sound("shot", global_position + Vector3(0, 2.2, 0), rng.randf_range(0.95, 1.08), -4.0)
+	if prev_t < 0.95 and beat_t >= 0.95:
+		if family == "west":
+			arm_l.rotation.x = 3.0
+			manager.toss_bottle(global_position + Vector3(-0.2, 2.0, 0), rng)
+		else:
+			say("kiai")
+	if t < 0.8:
+		pass
 	else:
 		var beat := manager.dance_clock
 		var hop := absf(sin(beat * 5.0)) * 0.25

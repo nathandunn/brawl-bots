@@ -568,6 +568,39 @@ func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float, kind := "bottle")
 	return {"hit": victim}
 
 
+## Victory: a bottle flung up into the air, turning over, smashing where it comes down.
+func toss_bottle(from: Vector3, r: RandomNumberGenerator) -> void:
+	if headless or saloon == null:
+		return
+	var mi := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.03
+	cm.bottom_radius = 0.055
+	cm.height = 0.3
+	cm.radial_segments = 8
+	mi.mesh = cm
+	mi.material_override = saloon.mat("glass_g" if r.randf() < 0.5 else "glass_b")
+	mi.position = from
+	world.add_child(mi)
+	var land := Vector3(from.x + r.randf_range(-1.6, 1.6), 0.05, from.z + r.randf_range(-1.6, 1.6))
+	var peak := r.randf_range(2.0, 3.2)
+	var tt := 1.0 + peak * 0.12
+	var tw := mi.create_tween()
+	tw.set_parallel(true)
+	tw.tween_method(func(u: float):
+		if is_instance_valid(mi):
+			var p := from.lerp(land, u)
+			p.y = lerpf(from.y, land.y, u) + 4.0 * u * (1.0 - u) * peak
+			mi.position = p, 0.0, 1.0, tt)
+	tw.tween_property(mi, "rotation:x", 14.0, tt)
+	tw.chain().tween_callback(func():
+		if is_instance_valid(mi):
+			mi.visible = false
+		sound("smash", land, r.randf_range(0.9, 1.15), -3.0)
+		_glass(land))
+	_fx.append([mi, tt + 1.0])
+
+
 func glass(at: Vector3) -> void:
 	_glass(at)
 

@@ -145,6 +145,10 @@ func _lineup() -> void:
 		var g: Gunman = picks[k]
 		g.global_position = Vector3(-0.45 + 0.9 * k, 0.0, 3.0)
 		g.rotation.y = PI
+		if String(_args.get("lineup", "1")) == "2" and g.arm_r != null:
+			# side on, gun up: for looking at the six-shooter
+			g.rotation.y = PI * 0.5 if k == 0 else -PI * 0.5
+			g.arm_r.rotation.x = 1.57
 	cam.min_dist = 2.0
 	cam.yaw = 0.25
 	cam.pitch = 0.12
