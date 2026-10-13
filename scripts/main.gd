@@ -36,6 +36,7 @@ func _ready() -> void:
 	manager = MatchManager.new()
 	manager.world = self
 	manager.headless = headless
+	manager.stall_watch = _dump
 	map_choice = String(args.get("map", "saloon"))
 	var sfx := Sfx.new()
 	add_child(sfx)

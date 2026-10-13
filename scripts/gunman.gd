@@ -121,7 +121,8 @@ var wrestle_t := -1.0
 var wrestle_with: Gunman = null
 var wrestle_lead := false     # he started it; he resolves it
 var _clinch_t := 0.0
-var _band_t := 0.0            # how long he's been stuck inside 3 m without landing a blow
+var _band_t := 0.0
+var _stall_t := 0.0           # an enemy within 3 m and nobody hurt: never let it sit            # how long he's been stuck inside 3 m without landing a blow
 # going over the rail (or off a roof)
 var falling := false
 var fall_dead := false        # the hit killed him; the fall is only where he lands
@@ -830,6 +831,8 @@ func rule_value(name: String) -> Variant:
 		"has_bottle": return has_bottle and held_kind == "bottle"
 		"holding": return has_bottle
 		"near_chair": return saloon.chair_within(global_position, 7.0) != null
+		"near_knife": return saloon.knife_within(global_position, 7.0) != null
+		"has_knife": return has_bottle and held_kind == "knife"
 		"clinch": return _nearest_enemy_alive(CLINCH) != null
 		"close": return _close_enemy() != null
 		"wrestling": return wrestle_t >= 0.0
@@ -991,6 +994,19 @@ func _do_rule(r: Dictionary, o: Dictionary) -> bool:
 			_enter("hunt", tag, lock)
 			_go_to(saloon.nearest_node(brain.enemy_home()), 0.0)
 			return true
+		"grab knife":
+			if has_bottle:
+				return false
+			var kn: Node3D = saloon.knife_within(global_position, 7.0)
+			if kn == null:
+				return false
+			if flat_dist(kn.position) < 1.6:
+				grab_t = 0.3 / ab_speed
+				_enter("hold", tag, 0.6)
+				return true
+			_enter("advance", tag, 2.5)
+			_go_to(saloon.nearest_node(kn.position + flat(global_position - kn.position).normalized() * 0.7), 50.0)
+			return true
 		"grab chair":
 			if has_bottle:
 				return false
@@ -1066,8 +1082,24 @@ func _decide() -> void:
 			_go_fallback()
 		else:
 			_enter("brawl", "fists up", 0.0)
-			_stop()
+			if flat_dist(near.global_position) > reach() - 0.1:
+				_step_in(near)   # not quite in reach: one more step
+			else:
+				_stop()
 		return
+	# --- last guard against a stand-off at arm's length (a wall or rail between, a bad route):
+	# after a few seconds he goes round to get at him
+	var any_near := _nearest_enemy_alive(3.0)
+	if any_near != null and manager.elapsed - last_hurt_t > 1.5 and manager.elapsed - any_near.last_hurt_t > 1.5 and wrestle_t < 0.0:
+		_stall_t += 0.5
+		if _stall_t > 4.0 and legs_hit() < 2:
+			_stall_t = 0.0
+			focus = any_near
+			_enter("rush", "no more waiting", 2.0)
+			_charge(any_near)
+			return
+	else:
+		_stall_t = 0.0
 	# --- inside 3 m and out of reach: no shooting here, so close in or make room
 	var cl := _close_enemy()
 	if cl == null:
@@ -1085,14 +1117,21 @@ func _decide() -> void:
 			var back_id := saloon.nearest_node(away)
 			# nowhere to back off to (a wall, the bar, a corner): then it's a fight
 			var can_back := back_id >= 0 and flat_dist(saloon.node_pos(back_id)) > 1.5 and saloon.node_pos(back_id).distance_to(cl.global_position) > NO_SHOOT
-			if (keen > 0.5 and can_punch()) or legs_hit() > 0 or not can_back:
-				_enter("brawl", "closing in", 0.6)
+			# something to throw within a few strides - a knife best of all - is worth the run
+			var fetch: Node3D = saloon.throwable_within(global_position, 4.5)
+			var fetch_w := 0.0
+			if fetch != null and arms_hit() < 2 and legs_hit() == 0:
+				fetch_w = 0.55 - 0.08 * flat_dist(fetch.position) + (0.25 if saloon.kind_of(fetch) == "knife" else 0.0) - 0.3 * p("brawl")
+			if fetch_w > 0.2 and rng.randf() < fetch_w + 0.25:
+				_enter("advance", "running for a %s" % saloon.kind_of(fetch), 1.5)
 				move_mode = "sprint"
-				# the line is clear: straight at him
-				path = PackedVector3Array([cl.global_position])
+				path = PackedVector3Array([fetch.position + flat(global_position - fetch.position).normalized() * 0.7 + Vector3(0, global_position.y - fetch.position.y, 0)])
 				path_ids = PackedInt64Array()
 				path_i = 0
 				goal_id = -1
+			elif (keen > 0.5 and can_punch()) or legs_hit() > 0 or not can_back:
+				_enter("brawl", "closing in", 0.6)
+				_step_in(cl)
 			else:
 				_enter("fall back", "making room to shoot", 0.9)
 				move_mode = "run"
@@ -1554,6 +1593,15 @@ func _nearest_enemy_alive(r: float) -> Gunman:
 	return best
 
 
+## Walk straight at him - the line between them is clear, no nav needed.
+func _step_in(e: Gunman) -> void:
+	move_mode = "sprint"
+	path = PackedVector3Array([e.global_position])
+	path_ids = PackedInt64Array()
+	path_i = 0
+	goal_id = -1
+
+
 ## The nearest enemy inside 3 m that he could actually get at - nothing solid (the bar, a
 ## flipped table, a wall) between their knees. Across the bar it's still a gunfight.
 func _close_enemy() -> Gunman:
@@ -1591,7 +1639,7 @@ func _move(delta: float) -> void:
 	if stagger_t > 0.0:
 		spd *= 0.3
 	# a man brawling squares up to his opponent
-	var near := focus if focus != null and is_instance_valid(focus) and focus.alive and flat_dist(focus.global_position) < PUNCH_RANGE + 0.6 else null
+	var near := focus if focus != null and is_instance_valid(focus) and focus.alive and flat_dist(focus.global_position) < reach() - 0.05 else null
 	if flip_table != null:
 		if not is_instance_valid(flip_table) or flip_table.flipped and flip_table.claimed_by != self:
 			flip_table = null
@@ -1839,7 +1887,8 @@ func _fight(delta: float) -> void:
 				return
 			_close_quarters(close)
 			return
-		_bottle_step(delta)
+		if not _bottle_step(delta) and stance == "brawl" and (path_i >= path.size() or path[path.size() - 1].distance_to(close.global_position) > 0.8):
+			_step_in(close)
 		return
 	if near != null:
 		# right in front of him: shoot from the hip, or knock his gun aside and hit him? Decided
@@ -2323,6 +2372,23 @@ func _punch_land() -> void:
 				e.take_damage(10.0 * punch_power(), "blunt", self, arm if broke2 else "bruise", dir)
 			else:
 				e.take_damage(float(w["dmg"]) * punch_power(), "blunt", self, "bruise", dir)
+		_ when has_bottle and held_kind == "knife":
+			# the knife, close: in under the ribs - a better man finds the heart
+			stats["melee_hits"] += 1
+			var r := rng.randf()
+			var vital := 0.1 + 0.12 * ab_smarts
+			var kpart := "gut"
+			if r < vital:
+				kpart = "heart"
+			elif r < vital + 0.45:
+				kpart = "gut"
+			elif r < vital + 0.75:
+				kpart = "arm_r" if rng.randf() < 0.5 else "arm_l"
+			else:
+				kpart = "leg_r" if rng.randf() < 0.5 else "leg_l"
+			manager.sound("thud", e.global_position + Vector3(0, 1.2, 0), 1.3, -3.0)
+			e.take_damage({"heart": 999.0, "gut": 22.0}.get(kpart, 10.0) * punch_power(), "knife", self, kpart, dir)
+			kd = false
 		_ when has_bottle:
 			# the bottle (or the chair) over his head
 			var was := held_kind
@@ -2533,7 +2599,7 @@ func _bottle_time() -> bool:
 func _bottle_target(kind := "") -> Gunman:
 	if kind == "":
 		kind = held_kind
-	var far := 8.0 if kind == "chair" else 13.0
+	var far := 8.0 if kind == "chair" else (11.0 if kind == "knife" else 13.0)
 	var best: Gunman = null
 	var bv := -INF
 	for e in visible_enemies:
@@ -2570,7 +2636,9 @@ func _throw_bottle() -> void:
 	held_kind = ""
 	if kind == "chair":
 		stats["chairs"] = int(stats.get("chairs", 0)) + 1
-	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * (0.86 if kind == "bottle" else 0.6), 0), sigma * (1.3 if kind == "chair" else 1.0), kind)
+	if kind == "knife":
+		stats["knives"] = int(stats.get("knives", 0)) + 1
+	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * (0.86 if kind == "bottle" else (0.7 if kind == "knife" else 0.6)), 0), sigma * (1.3 if kind == "chair" else (0.8 if kind == "knife" else 1.0)), kind)
 
 
 ## Off a table or the bar within `r`, while there's nobody right on him: go and get it.
@@ -2613,6 +2681,19 @@ func _show_bottle(on: bool) -> void:
 			chair_held.visible = on
 		if held_kind == "chair":
 			return
+	if held_kind == "knife":
+		if on:
+			if bottle_mi != null:
+				bottle_mi.queue_free()
+			bottle_mi = Saloon.knife_mesh(saloon.mat("dark"))
+			bottle_mi.position = Vector3(0, -0.66, -0.05)
+			arm_l.add_child(bottle_mi)
+		elif bottle_mi != null:
+			bottle_mi.visible = false
+		return
+	if bottle_mi != null and bottle_mi.get_child_count() > 0:
+		bottle_mi.queue_free()   # a knife was here; make a fresh bottle
+		bottle_mi = null
 	if on and bottle_mi == null:
 		bottle_mi = MeshInstance3D.new()
 		var cm := CylinderMesh.new()
@@ -2641,7 +2722,7 @@ func _drop_bottle() -> void:
 func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 	if falling or trav_t >= 0.0 or global_position.y < 1.2:
 		return false
-	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw", "chair"]
+	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw", "chair", "knife"]
 	var toward := flat(dir).normalized() if shove and flat(dir).length() > 0.01 else Vector3.ZERO
 	# a dying man staggers a step or two before he goes; a blow drives a man back a good stride
 	var e := saloon.fall_edge(global_position, 1.5 if fatal else (1.6 if shove else 0.9), toward)
@@ -2657,7 +2738,7 @@ func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 			chance = 0.95 if fatal else 0.5
 		"kick", "throw", "chair":
 			chance = 0.95 if fatal else 0.6
-		"blade":
+		"blade", "knife":
 			chance = 0.9 if fatal else 0.3
 	if knocked_t > 0.0 or legs_hit() > 0:
 		chance += 0.2
@@ -2794,7 +2875,7 @@ func take_damage(amount: float, how: String, by: Gunman, part: String, dir: Vect
 			brain.log_event("%s is down on the floor - both legs" % gm_name, true)
 	suppression = minf(1.5, suppression + 0.5)
 	_hurt_flash()
-	if how == "gun" or how == "blade" or how == "star":
+	if how == "gun" or how == "blade" or how == "star" or how == "knife":
 		manager.spray(global_position + Vector3(0, height() * 0.7, 0), dir)
 	if how == "star" and part != "head" and part != "heart" and not wounds.has(part):
 		bleed += 0.5   # a star in the flesh bleeds even where it hits nothing that matters

@@ -265,7 +265,37 @@ func set_show_intents(on: bool) -> void:
 		g._update_label()
 
 
+var stall_watch := false
+var _stall := {}
+var _stall_tick := 0.0
+
+
+## Debug (--dumpmen): two enemies within 3 m for 5 s with nobody hurt is a stall - print both.
+func _watch_stalls(delta: float) -> void:
+	_stall_tick += delta
+	if _stall_tick < 0.5 or not running:
+		return
+	_stall_tick = 0.0
+	var men := alive_gunmen()
+	for a in men:
+		for b in men:
+			if a.team != 0 or b.team != 1:
+				continue
+			var key := "%s|%s" % [a.gm_name, b.gm_name]
+			var d := Vector2(a.global_position.x - b.global_position.x, a.global_position.z - b.global_position.z).length()
+			if d > 3.0 or absf(a.global_position.y - b.global_position.y) > 1.2 or elapsed - a.last_hurt_t < 1.0 or elapsed - b.last_hurt_t < 1.0:
+				_stall.erase(key)
+				continue
+			_stall[key] = float(_stall.get(key, 0.0)) + 0.5
+			if absf(float(_stall[key]) - 5.0) < 0.01:
+				print("STALL t=%.1f d=%.2f clear=%s" % [elapsed, d, saloon.line_clear(a.global_position + Vector3(0, 0.45, 0), b.global_position + Vector3(0, 0.45, 0))])
+				for g in [a, b]:
+					print("   %s pos=%s st=%s mode=%s lock=%.1f knocked=%.1f pcd=%.2f wind=%.2f stag=%.2f face=%s canp=%s arms=%d legs=%d wr=%.1f grab=%.1f throw=%.1f bottle=%s path=%d/%d trav=%.1f fall=%s ammo=%d jam=%s rel=%s melee=%s reach=%.2f" % [g.gm_name, g.global_position, g.stance, g.mode, g.stance_lock, g.knocked_t, g.punch_cd, g.punch_wind, g.stagger_t, g.facing((b if g == a else a).global_position, 0.0), g.can_punch(), g.arms_hit(), g.legs_hit(), g.wrestle_t, g.grab_t, g.throw_wind, g.has_bottle, g.path_i, g.path.size(), g.trav_t, g.falling, g.total_ammo(), g.jammed, g.reloading, g.melee, g.reach()])
+
+
 func _physics_process(delta: float) -> void:
+	if stall_watch:
+		_watch_stalls(delta)
 	dance_clock += delta
 	_tick_fx(delta)
 	for i in range(_pending.size() - 1, -1, -1):
@@ -499,6 +529,7 @@ func throw_star(thrower: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 ## shelf.
 func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float, kind := "bottle") -> Dictionary:
 	var chair := kind == "chair"
+	var knife := kind == "knife"
 	var from := thrower.muzzle() + Vector3(0, 0.2, 0)
 	var dir := (aim - from).normalized()
 	var right := dir.cross(Vector3.UP)
@@ -525,13 +556,15 @@ func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float, kind := "bottle")
 			hit_y = r.y
 	if victim != null:
 		stop = from + dir * best_t
-	var flight := from.distance_to(stop) / (9.0 if chair else BOTTLE_SPEED)
-	_bottle_visual(from, stop, flight, chair)
+	var flight := from.distance_to(stop) / (9.0 if chair else (17.0 if knife else BOTTLE_SPEED))
+	_bottle_visual(from, stop, flight, chair, knife)
 	var v := victim
 	var at := stop
 	var hy := hit_y
 	_pending.append([elapsed + flight, func():
-		if chair:
+		if knife:
+			sound("wood", at, 1.5, -6.0)
+		elif chair:
 			sound("wood", at, 0.7, 3.0)
 			_dust(at)
 		else:
@@ -552,6 +585,16 @@ func throw_bottle(thrower: Gunman, aim: Vector3, sigma: float, kind := "bottle")
 		last_damage_t = elapsed
 		var by: Gunman = thrower if is_instance_valid(thrower) else null
 		var how := "chair" if chair else "bottle"
+		if knife:
+			# the point goes in: head and heart kill, anything else cuts and bleeds
+			if part == "head" or part == "heart":
+				if is_instance_valid(thrower):
+					thrower.stats["heads"] += 1
+			v.take_damage({"head": 999.0, "heart": 999.0, "gut": 26.0}.get(part, 10.0) * rng.randf_range(0.85, 1.15), "knife", by, part, dir)
+			if v.alive and not wounds_has(part):
+				v.bleed += 0.6
+				v.bleed_by = by
+			return
 		if part == "head":
 			v.take_damage((22.0 if chair else 16.0) * rng.randf_range(0.85, 1.15), how, by, "head_blunt", dir)
 			if v.alive and v.knocked_t <= 0.0 and not v.falling:
@@ -601,15 +644,21 @@ func toss_bottle(from: Vector3, r: RandomNumberGenerator) -> void:
 	_fx.append([mi, tt + 1.0])
 
 
+static func wounds_has(part: String) -> bool:
+	return part in ["gut", "arm_r", "arm_l", "leg_l", "leg_r"]
+
+
 func glass(at: Vector3) -> void:
 	_glass(at)
 
 
-func _bottle_visual(a: Vector3, b: Vector3, t: float, chair := false) -> void:
+func _bottle_visual(a: Vector3, b: Vector3, t: float, chair := false, knife := false) -> void:
 	if headless:
 		return
 	var mi: Node3D
-	if chair:
+	if knife:
+		mi = Saloon.knife_mesh(saloon.mat("dark"))
+	elif chair:
 		mi = Saloon.chair_mesh(saloon.mat("wood"), saloon.mat("dark"))
 	else:
 		var bmi := MeshInstance3D.new()

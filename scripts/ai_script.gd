@@ -54,6 +54,8 @@ const BOOLS := {
 	"close": "an enemy is within 3 m - nobody shoots that close",
 	"holding": "he has a bottle or a chair in his hands",
 	"near_chair": "a chair within 7 m",
+	"near_knife": "a knife lying within 7 m",
+	"has_knife": "he has a knife in his hand",
 	"wrestling": "he is locked in a wrestle",
 }
 const NUMS := {
@@ -85,6 +87,7 @@ const ACTIONS := {
 	"flip table": "kick over the nearest table into cover",
 	"grab bottle": "go and get the nearest bottle within 7 m (then throw it)",
 	"grab chair": "go and pick up the nearest chair within 7 m (then throw it)",
+	"grab knife": "go and pick up the nearest knife within 7 m (throw it, or use it close)",
 	"default": "whatever the built-in brain would do",
 }
 const RUSH_TARGETS: Array[String] = ["nearest", "weakest", "reloading", "high", "aiming", "melee"]
@@ -98,6 +101,7 @@ const EXAMPLES := [
 	["Pinned down: get out of sight", "when pinned -> hide for 2"],
 	["Out of rounds: find a bottle", "when dry and not has_bottle and near_bottle -> grab bottle"],
 	["Too close to shoot: grab a chair", "when close and not holding and near_chair -> grab chair"],
+	["Knife first when it's close", "when close and not holding and near_knife -> grab knife"],
 	["Get up top early", "when not high and time > 90 -> take high"],
 	["Off the rail when they're close", "when edge and nearest < 4 -> fall back"],
 	["Supers break a stalemate", "when super and stalemate -> flank"],

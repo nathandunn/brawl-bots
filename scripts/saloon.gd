@@ -50,7 +50,8 @@ var spawns: Array = [[], []]
 var tables: Array[Table] = []
 var bottles: Array[MeshInstance3D] = []
 var rail_posts: Array[MeshInstance3D] = []
-var chairs: Array[Node3D] = []               # saloon chairs: pick one up and throw it   # the balusters, so a man can go through them
+var chairs: Array[Node3D] = []               # saloon chairs: pick one up and throw it
+var knives: Array[Node3D] = []               # a few knives lying about, on every map   # the balusters, so a man can go through them
 var _splinters: Array[Node3D] = []
 var env := {}                          # lighting for main.gd
 
@@ -83,6 +84,100 @@ func build(id: String) -> void:
 		_build_ladder(l)
 	_build_nav()
 	_pick_spawns()
+	_place_knives()
+
+
+## Six knives: two on the bar in the saloon, the rest on the floor by cover across the middle
+## of the room, mirrored so neither side starts nearer.
+func _place_knives() -> void:
+	var spots: Array[Vector3] = []
+	if map_id == "saloon":
+		spots.append(Vector3(-2.5, 1.19, 7.5))
+		spots.append(Vector3(2.5, 1.19, 7.5))
+	var cand: Array[Vector3] = []
+	for nd in nodes:
+		if nd.get("dead", false) or int(nd["level"]) != 0 or not nd["spot"]:
+			continue
+		var p: Vector3 = nd["pos"]
+		if absf(p.z - mid_z) < half_z * 0.45 and p.x > 1.5 and p.x < half_x - 2.0:
+			cand.append(p)
+	cand.sort_custom(func(a, b): return a.x < b.x)
+	var want := 6 - spots.size()
+	for k in want / 2:
+		if cand.is_empty():
+			break
+		var p: Vector3 = cand[int(float(k + 0.5) / float(want / 2) * cand.size()) % cand.size()]
+		spots.append(Vector3(p.x, 0.03, p.z))
+		spots.append(Vector3(-p.x, 0.03, p.z))
+	for s in spots:
+		var kn := Saloon.knife_mesh(_mats["dark"])
+		kn.position = s
+		kn.rotation = Vector3(PI * 0.5, s.x * 1.7, 0)
+		add_child(kn)
+		knives.append(kn)
+
+
+## A Bowie knife: a steel blade and a dark handle, built along -Y (point down).
+static func knife_mesh(handle: Material) -> MeshInstance3D:
+	var steel := StandardMaterial3D.new()
+	steel.albedo_color = Color(0.85, 0.86, 0.9)
+	steel.metallic = 0.6
+	steel.roughness = 0.25
+	var h := MeshInstance3D.new()
+	var hm := BoxMesh.new()
+	hm.size = Vector3(0.03, 0.11, 0.035)
+	h.mesh = hm
+	h.material_override = handle
+	var b := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.008, 0.2, 0.045)
+	b.mesh = bm
+	b.material_override = steel
+	b.position = Vector3(0, -0.15, 0)
+	h.add_child(b)
+	var g := MeshInstance3D.new()
+	var gm := BoxMesh.new()
+	gm.size = Vector3(0.02, 0.015, 0.08)
+	g.mesh = gm
+	g.material_override = steel
+	g.position = Vector3(0, -0.055, 0)
+	h.add_child(g)
+	return h
+
+
+func knife_within(p: Vector3, r: float) -> Node3D:
+	var best: Node3D = null
+	var bd := r
+	for kn in knives:
+		if not kn.visible or absf(kn.position.y - p.y) > 1.6:
+			continue
+		var d := Vector2(kn.position.x - p.x, kn.position.z - p.z).length()
+		if d < bd:
+			bd = d
+			best = kn
+	return best
+
+
+## The nearest knife, chair or bottle within `r` of `p`.
+func throwable_within(p: Vector3, r: float) -> Node3D:
+	var best: Node3D = null
+	var bd := r
+	for n in [knife_within(p, r), chair_within(p, r), bottle_within(p, r)]:
+		if n == null:
+			continue
+		var d := Vector2(n.position.x - p.x, n.position.z - p.z).length()
+		if d < bd:
+			bd = d
+			best = n
+	return best
+
+
+func kind_of(n: Node3D) -> String:
+	if knives.has(n):
+		return "knife"
+	if chairs.has(n):
+		return "chair"
+	return "bottle"
 
 
 # ---------------------------------------------------------------- materials
@@ -1105,6 +1200,8 @@ func reset_props() -> void:
 		rp.visible = true
 	for ch in chairs:
 		ch.visible = true
+	for kn in knives:
+		kn.visible = true
 	for sp in _splinters:
 		if is_instance_valid(sp):
 			sp.queue_free()
@@ -1196,6 +1293,9 @@ func chair_within(p: Vector3, r: float) -> Node3D:
 
 ## Whatever a man at `p` could pick up and throw: {"node", "kind"} or {}.
 func throwable_near(p: Vector3, reach: float) -> Dictionary:
+	var kn := knife_within(p, reach)
+	if kn != null:
+		return {"node": kn, "kind": "knife"}
 	var b := bottle_near(p, reach)
 	var ch := chair_within(p, reach)
 	if ch != null and (b == null or Vector2(ch.position.x - p.x, ch.position.z - p.z).length() < Vector2(b.position.x - p.x, b.position.z - p.z).length()):
