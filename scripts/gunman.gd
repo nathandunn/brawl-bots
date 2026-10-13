@@ -1144,6 +1144,24 @@ func _decide() -> void:
 			return
 		if locked_rule and _continue_stance(o):
 			return
+	# --- a lull: nobody hurt for a while and nobody in sight. Sitting in corners ends here - the
+	# keen go first, then everybody; a dry man fetches something to throw on the way
+	var quiet := manager.quiet_time()
+	if quiet > 6.0 and visible_enemies.is_empty() and legs_hit() < 2 and stance != "hunt" and (quiet > 11.0 or p("aggression") + 0.5 * p("nerve") + (0.4 if bleed > 0.0 else 0.0) > 0.7):
+		if gun == "colt" and total_ammo() == 0 and not has_bottle and _go_for_bottle(12.0):
+			return
+		var tgt := _nearest_enemy_alive(99.0)
+		if tgt == null:
+			for e in manager.alive_gunmen():
+				if e.team != team and (tgt == null or flat_dist(e.global_position) < flat_dist(tgt.global_position)):
+					tgt = e
+		if tgt != null:
+			focus = tgt
+			_enter("hunt", "flushing them out", 3.0)
+			move_mode = "run"
+			var where: Vector3 = brain.contact_pos(tgt) if brain.contacts.has(tgt) and quiet < 15.0 else tgt.global_position
+			_go_to(saloon.nearest_node(where), 60.0)
+			return
 	# --- modes that hold a man until they run their course
 	if stance_lock > 0.0 and _continue_stance(o):
 		return
@@ -2447,11 +2465,13 @@ func _melee_target() -> Gunman:
 func _close_quarters(e: Gunman) -> void:
 	var fists := can_punch()
 	var legs := legs_hit() == 0
-	var w_punch := (0.5 + 0.3 * p("brawl")) if fists else 0.0
-	var w_kick := (0.25 + 0.35 * ab_jump + (0.2 if family == "ninja" else 0.0)) if legs else 0.0
+	# about 70% blows, 30% grabbing him and throwing him - a better brawler throws more
 	var w_wrestle := 0.0
-	if not melee_first() and arms_hit() < 2 and e.wrestle_t < 0.0 and wrestle_t < 0.0 and flat_dist(e.global_position) < CLINCH + 0.25:
-		w_wrestle = 0.2 + 0.35 * p("brawl") + (0.25 if e.aim_target == self else 0.0)
+	if not melee_first() and arms_hit() < 2 and e.wrestle_t < 0.0 and wrestle_t < 0.0:
+		w_wrestle = 0.18 + 0.25 * p("brawl") + 0.06 * (ab_speed - 1.0) * 5.0
+	var strikes := 1.0 - w_wrestle
+	var w_kick := strikes * (0.2 + 0.25 * ab_jump + (0.15 if family == "ninja" else 0.0)) if legs else 0.0
+	var w_punch := (strikes - w_kick) if fists else 0.0
 	if melee_first():
 		w_punch = 0.65   # the blade, close
 	var tot := w_punch + w_kick + w_wrestle
@@ -2497,6 +2517,12 @@ func _start_wrestle(e: Gunman) -> void:
 	e.grab_t = -1.0
 	_stop()
 	e._stop()
+	# the grab pulls them together
+	var gap := flat(e.global_position - global_position)
+	if gap.length() > 0.8:
+		var pull := gap.normalized() * (gap.length() - 0.75) * 0.5
+		global_position += pull
+		e.global_position -= pull
 	manager.sound("thud", global_position + Vector3(0, 1.2, 0), 0.6, -6.0)
 	# a gun between two men wrestling for it goes off - or jams
 	for m in [self, e]:
@@ -2517,7 +2543,11 @@ func _resolve_wrestle() -> void:
 	top.stats["throws"] += 1
 	manager.sound("thud", bottom.global_position + Vector3(0, 0.3, 0), 0.6, 2.0)
 	var dir := top.flat(bottom.global_position - top.global_position).normalized()
-	bottom.take_damage(7.0 * top.punch_power(), "throw", top, "fists", dir)
+	# over the hip and down, a stride away (if there's floor there)
+	var land := bottom.global_position + dir * 1.1
+	if saloon.line_clear(bottom.global_position + Vector3(0, 0.4, 0), land + Vector3(0, 0.4, 0)):
+		bottom.global_position = land
+	bottom.take_damage(9.0 * top.punch_power(), "throw", top, "fists", dir)
 	if bottom.alive and not bottom.falling:
 		bottom.knock_down(1.6)
 		top.punch_cd = 0.15

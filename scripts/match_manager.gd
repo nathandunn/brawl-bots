@@ -266,6 +266,19 @@ func set_show_intents(on: bool) -> void:
 
 
 var stall_watch := false
+var _lull_printed := false
+
+
+## Seconds since anybody in the room was hurt by anything - the lull clock.
+func quiet_time() -> float:
+	return elapsed - maxf(last_damage_t, _last_hurt_any(alive_gunmen()))
+
+
+func _last_hurt_any(men: Array) -> float:
+	var t := 0.0
+	for g in men:
+		t = maxf(t, g.last_hurt_t)
+	return t
 var _stall := {}
 var _stall_tick := 0.0
 
@@ -277,6 +290,20 @@ func _watch_stalls(delta: float) -> void:
 		return
 	_stall_tick = 0.0
 	var men := alive_gunmen()
+	var quiet := elapsed - maxf(last_damage_t, _last_hurt_any(men))
+	if quiet > 12.0 and alive_count(0) > 0 and alive_count(1) > 0 and not _lull_printed:
+		_lull_printed = true
+		print("LULL t=%.1f quiet=%.1f" % [elapsed, quiet])
+		for g in men:
+			var ne: Gunman = null
+			var nd := 99.0
+			for e in men:
+				if e.team != g.team and g.flat_dist(e.global_position) < nd:
+					nd = g.flat_dist(e.global_position)
+					ne = e
+			print("   %s pos=%s st=%s mode=%s lock=%.1f hp=%d ammo=%d jam=%s rel=%s see=%d near=%.1f path=%d/%d goal=%d bottle=%s legs=%d arms=%d knocked=%.1f" % [g.gm_name, g.global_position, g.stance, g.mode, g.stance_lock, int(g.hp), g.total_ammo(), g.jammed, g.reloading, g.visible_enemies.size(), nd, g.path_i, g.path.size(), g.goal_id, g.has_bottle, g.legs_hit(), g.arms_hit(), g.knocked_t])
+	elif quiet < 1.0:
+		_lull_printed = false
 	for a in men:
 		for b in men:
 			if a.team != 0 or b.team != 1:
