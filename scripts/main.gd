@@ -258,6 +258,12 @@ func _start_next() -> void:
 		s = _base_seed + manager.match_index
 	_ensure_map(_resolve_map())
 	manager.start_match(s)
+	# every match starts on the wide view, the whole map in shot
+	if cam != null and not _args.has("lineup"):
+		cam.fit_map(saloon.half_x, saloon.half_z)
+		if _args.has("cam"):
+			cam.wide_dist = float(_args["cam"])
+		cam.go_wide()
 	if _args.has("lassotest"):
 		# debug: a roper under the balcony, his man at the rail above, a sure throw
 		var a: Gunman = manager.gunmen[0]

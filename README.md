@@ -40,6 +40,14 @@ yours to rewrite. Part of the [Precog sim suite](https://apps.precogsoftwareserv
   to stab with.
 - **Bottles (5)** - throw them (a skull hit knocks a man flat) or break one over a head.
 
+## The view
+
+Every match starts **wide**, the whole map in shot. Bottom right: pan (arrows, with **Wide** in
+the middle to put the whole map back), rotate, tilt and zoom - hold to keep going; *Hide view
+controls* tucks them away. Mouse: drag to orbit, right-drag (or shift-drag) to pan, wheel to zoom.
+Touch: one finger orbits, two pinch and pan. Keys: arrows/WASD pan, Q E rotate, R F tilt,
++ - zoom, Home or 0 for wide.
+
 ## Rules of the fight
 
 - Last side standing wins. Three-second standoff. At **2:00** the side with more men standing wins

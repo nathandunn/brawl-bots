@@ -812,7 +812,9 @@ func _ray_capsule(o: Vector3, d: Vector3, max_t: float, g: Gunman) -> Vector2:
 	var t: float = res.y * max_t
 	# back off to the surface
 	t = maxf(0.0, t - sqrt(maxf(r * r - res.x * res.x, 0.0)))
-	return Vector2(t, a.lerp(b, res.z).y)
+	# the height where it actually goes in, not the nearest point on the spine: the spine stops
+	# a radius short of the crown, so measured there the top of the head could never be hit
+	return Vector2(t, minf((o + d * t).y, base.y + g.height()))
 
 
 func _seg_dist_to_body(p0: Vector3, p1: Vector3, g: Gunman) -> float:
