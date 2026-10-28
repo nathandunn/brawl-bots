@@ -63,6 +63,29 @@ const GRADE_NAMES := {
 	"ninja": {"Minion": "Genin", "Regular": "Chunin", "Veteran": "Jonin", "Super": "Grandmaster"},
 }
 
+## Firearms. cap: rounds before a reload; spare: rounds carried besides; cock: s between aimed
+## shots; load: s per round reloading; spread: x the Colt's; range: how far he'll take a shot
+## (m, the hit-chance scale); aim: x the time he wants to aim; dmg: x a Colt slug's body damage.
+## The shotgun throws 8 pellets in a cone; head and heart kill outright with any of them close in.
+const GUNS := {
+	"colt": {"name": "Colt six-shooter", "cap": 6, "spare": 12, "cock": 0.62, "load": 0.42, "spread": 1.0, "range": 20.0, "aim": 1.0, "dmg": 1.0, "pellets": 1},
+	"shotgun": {"name": "Double-barrel shotgun", "cap": 2, "spare": 12, "cock": 0.3, "load": 0.55, "spread": 1.0, "range": 9.0, "aim": 0.55, "dmg": 1.0, "pellets": 8},
+	"rifle": {"name": "Lever-action rifle", "cap": 8, "spare": 10, "cock": 0.85, "load": 0.5, "spread": 0.75, "range": 26.0, "aim": 1.5, "dmg": 1.0, "pellets": 1},
+}
+## What a man can be handed instead of his character's usual kit ("" = the usual).
+const WEAPON_CHOICES: Array[String] = ["", "colt", "shotgun", "rifle", "lasso", "knife", "bottle"]
+const WEAPON_NAMES := {"": "Usual kit", "colt": "Colt", "shotgun": "Shotgun", "rifle": "Rifle", "lasso": "Colt + lasso", "knife": "Knives (5)", "bottle": "Bottles (5)"}
+const WEAPON_HELP := {
+	"": "Whatever the character carries (a Colt for gunmen; the ninja's own weapon)",
+	"colt": "Six shots, 18 in all; quick, fair at any range, can fan the hammer",
+	"shotgun": "Two barrels, 14 shells; a cone of pellets - murder close, little past 10 m",
+	"rifle": "Ten in the tube, 20 in all; slow and steady, deadly at long range",
+	"lasso": "A Colt and a rope: a man roped can't shoot until he struggles free, and he's dragged in - off the balcony, if you're below",
+	"knife": "Five knives: throw them (head or heart kills) or keep the last to stab with",
+	"bottle": "Five bottles: throw them (a knockdown on the head) or break one over a head",
+}
+
+
 ## Melee weapons. reach (m), wind (s to land), cd (s between blows), block (chance to turn a
 ## blow or a star when facing it), kd (knockdown), cut (bleeds) or blunt (bruises, breaks, stuns).
 const WEAPONS := {

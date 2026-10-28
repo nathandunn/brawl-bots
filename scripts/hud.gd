@@ -320,6 +320,14 @@ func _fill_team(t: int) -> void:
 	grid.add_child(_picker(Roster.GRADE_ORDER, gl, manager.team_grades[t], func(g):
 		manager.team_grades[t] = g
 		_fill_team.call_deferred(t)))
+	# weapon
+	var wl: Array = []
+	for w in Roster.WEAPON_CHOICES:
+		wl.append(String(Roster.WEAPON_NAMES[w]))
+	grid.add_child(_key("Weapon"))
+	grid.add_child(_picker(Roster.WEAPON_CHOICES, wl, manager.team_weapons[t], func(w):
+		manager.team_weapons[t] = w
+		_fill_team.call_deferred(t)))
 	# plan
 	grid.add_child(_key("Plan"))
 	grid.add_child(_picker(TeamBrain.DOCTRINES, TeamBrain.DOCTRINES, manager.doctrines[t], func(d):
@@ -328,6 +336,7 @@ func _fill_team(t: int) -> void:
 	var ab := Roster.abilities(manager.team_grades[t], manager.team_presets[t])
 	var kh := String(Personality.PRESET_HELP.get(manager.team_presets[t], "Your own mix from the sliders below" if manager.team_presets[t] == "Custom" else ""))
 	v.add_child(_lbl("%s. %s: speed %.2f, jump %.2f, smarts %.2f. %s" % [String(Roster.FACTIONS[fac]["blurb"]), Roster.grade_name(manager.team_grades[t], fac), ab["speed"], ab["jump"], ab["smarts"], kh], 12, Color(0.82, 0.8, 0.74)))
+	v.add_child(_lbl("Weapon: " + String(Roster.WEAPON_HELP.get(manager.team_weapons[t], "")), 12, Color(0.82, 0.8, 0.74)))
 	v.add_child(_lbl("Plan: " + String(TeamBrain.DOCTRINE_HELP.get(manager.doctrines[t], "")), 12, Color(0.82, 0.8, 0.74)))
 	# AI script
 	var srow := HFlowContainer.new()
@@ -353,6 +362,11 @@ func _fill_team(t: int) -> void:
 	for k in Roster.kinds_for(fac):
 		mk.append(k)
 		ml.append(k)
+	var mw: Array = Roster.WEAPON_CHOICES.duplicate()
+	var mwl: Array = ["Team weapon"]
+	for w in Roster.WEAPON_CHOICES:
+		if w != "":
+			mwl.append(String(Roster.WEAPON_NAMES[w]))
 	var mg: Array = [""]
 	var mgl: Array = ["Team grade"]
 	for g in Roster.GRADE_ORDER:
@@ -364,6 +378,7 @@ func _fill_team(t: int) -> void:
 		cell.add_child(_key("%s%d" % [letter, i + 1], 13, col.lightened(0.3)))
 		cell.add_child(_picker(mk, ml, String(manager.player_preset[t][i]), func(k): manager.player_preset[t][ii] = k))
 		cell.add_child(_picker(mg, mgl, String(manager.player_grade[t][i]), func(g): manager.player_grade[t][ii] = g))
+		cell.add_child(_picker(mw, mwl, String(manager.player_weapon[t][i]), func(w): manager.player_weapon[t][ii] = w))
 		men.add_child(cell)
 	# custom temperament
 	v.add_child(_lbl("Custom temperament (dragging sets the side to Custom)", 13, Color(1, 0.85, 0.55)))
@@ -784,6 +799,8 @@ func _fate(m: Dictionary) -> String:
 		how = "beaten down"
 	elif dh == "bottle":
 		how = "brained with a bottle"
+	elif dh == "lasso":
+		how = "roped off the balcony"
 	elif dh == "knife":
 		how = "knifed (%s)" % String(MatchManager.PART_NAMES.get(dp, dp))
 	elif dh == "chair":

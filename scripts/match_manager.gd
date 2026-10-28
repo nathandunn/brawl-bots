@@ -44,6 +44,8 @@ var team_sizes: Array[int] = [TEAM_SIZE, TEAM_SIZE]
 var team_grades: Array[String] = ["Regular", "Regular"]
 var player_preset := [[], []]    # per man: "" = follow the team
 var player_grade := [[], []]
+var team_weapons: Array[String] = ["", ""]   # "" = the character's usual kit
+var player_weapon := [[], []]
 var scripts: Array = [null, null]          # AiScript per side (null = built-in brain only)
 var script_text: Array[String] = ["", ""]
 var team_names: Array[String] = ["Outlaws", "Law"]
@@ -98,6 +100,7 @@ func _init() -> void:
 		for i in MAX_TEAM:
 			player_preset[t].append("")
 			player_grade[t].append("")
+			player_weapon[t].append("")
 
 
 ## Names and colours from the factions; the same faction on both sides gets told apart.
@@ -196,6 +199,15 @@ func start_match(seed_value: int = -1) -> void:
 			g.melee = String(lo["melee"])
 			g.loadout_stars = int(lo["stars"])
 			g.stealth = bool(lo.get("stealth", false))
+			var wch := String(player_weapon[t][i]) if String(player_weapon[t][i]) != "" else team_weapons[t]
+			if Roster.GUNS.has(wch) or wch == "lasso":
+				g.gun = "colt" if wch == "lasso" else wch
+				g.loadout_stars = 0
+				g.has_lasso = wch == "lasso"
+			elif wch == "knife" or wch == "bottle":
+				g.gun = ""
+				g.loadout_stars = 0
+				g.carry_kind = wch
 			g.script_rules = scripts[t]
 			g.manager = self
 			g.saloon = saloon
@@ -412,7 +424,27 @@ func sound(cue: String, at: Vector3, pitch := 1.0, vol := 0.0) -> void:
 ## Fire one round from `shooter` at `aim` with angular spread `sigma`. The slug flies on a
 ## perturbed straight line until it meets wood, a wall, or a man (any man - friends included).
 ## Men it passes close to are suppressed. Everyone in the room hears it.
-func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
+## One pull of a shotgun: one bang, eight pellets in a cone. Each pellet is a small slug: head
+## or heart kills within 8 m, further out it only hurts; most body pellets don't make a wound.
+func fire_shotgun(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
+	shooter.stats["shots"] += 1
+	sound("shot", shooter.muzzle(), rng.randf_range(0.62, 0.72), 3.0)
+	brains[1 - shooter.team].enemy_fired(shooter)
+	var first: Gunman = null
+	var hit_any := false
+	for k in 8:
+		var r := fire_bullet(shooter, aim, sigma * 0.5 + 0.055, 1.0, true)
+		var v = r.get("hit")
+		if v != null and first == null:
+			first = v
+		if v != null and (v as Gunman).team != shooter.team:
+			hit_any = true
+	if hit_any:
+		shooter.stats["hits"] += 1
+	return {"hit": first}
+
+
+func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float, dmg_mult := 1.0, pellet := false) -> Dictionary:
 	var from := shooter.muzzle()
 	var dir := (aim - from).normalized()
 	var right := dir.cross(Vector3.UP)
@@ -425,9 +457,10 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 	var hit := saloon.bullet_ray(from, end, rng)
 	var stop: Vector3 = hit.get("position", end)
 	var seg_len := from.distance_to(stop)
-	shooter.stats["shots"] += 1
-	sound("shot", from, rng.randf_range(0.92, 1.08))
-	brains[1 - shooter.team].enemy_fired(shooter)
+	if not pellet:
+		shooter.stats["shots"] += 1
+		sound("shot", from, rng.randf_range(0.92, 1.08) if dmg_mult <= 1.0 else rng.randf_range(0.78, 0.86), 2.0 if dmg_mult > 1.0 else 0.0)
+		brains[1 - shooter.team].enemy_fired(shooter)
 	# first man along the line
 	var victim: Gunman = null
 	var best_t := seg_len
@@ -444,8 +477,16 @@ func fire_bullet(shooter: Gunman, aim: Vector3, sigma: float) -> Dictionary:
 	if victim != null:
 		stop = from + dir * best_t
 		var part := hit_part(victim, stop, hit_y)
-		var dmg: float = DMG[part] * rng.randf_range(0.85, 1.15)
-		if victim.team != shooter.team:
+		var dmg: float = DMG[part] * rng.randf_range(0.85, 1.15) * (dmg_mult if part != "head" and part != "heart" else 1.0)
+		if pellet:
+			var far := best_t > 8.0
+			if part == "head" or part == "heart":
+				dmg = 30.0 if far else 999.0
+			else:
+				dmg = 13.0 if part == "gut" else 7.0
+				if rng.randf() < 0.55:
+					part = "pellet"   # a graze: it hurts, it doesn't open a wound
+		if victim.team != shooter.team and not pellet:
 			shooter.stats["hits"] += 1
 			if part == "head" or part == "heart":
 				shooter.stats["heads"] += 1

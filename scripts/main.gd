@@ -61,6 +61,9 @@ func _ready() -> void:
 	for k in [["redn", 0], ["bluen", 1]]:
 		if args.has(k[0]):
 			manager.team_sizes[k[1]] = clampi(int(args[k[0]]), 1, MatchManager.MAX_TEAM)
+	for k in [["redweapon", 0], ["blueweapon", 1]]:
+		if args.has(k[0]) and Roster.WEAPON_CHOICES.has(args[k[0]]):
+			manager.team_weapons[k[1]] = args[k[0]]
 	for k in [["redgrade", 0], ["bluegrade", 1]]:
 		if args.has(k[0]) and Roster.GRADES.has(args[k[0]]):
 			manager.team_grades[k[1]] = args[k[0]]
@@ -255,6 +258,16 @@ func _start_next() -> void:
 		s = _base_seed + manager.match_index
 	_ensure_map(_resolve_map())
 	manager.start_match(s)
+	if _args.has("lassotest"):
+		# debug: a roper under the balcony, his man at the rail above, a sure throw
+		var a: Gunman = manager.gunmen[0]
+		var b: Gunman = manager.gunmen[manager.team_sizes[0]]
+		a.has_lasso = true
+		a.global_position = Vector3(1.0, 0.0, -3.6)
+		b.global_position = Vector3(1.0, 3.26, -7.0)
+		a.lasso_target = b
+		a.lasso_wind = 0.05
+		a._lasso_sure = true
 
 
 func _run_batch(n: int) -> void:

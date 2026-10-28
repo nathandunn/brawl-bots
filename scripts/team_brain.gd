@@ -110,7 +110,7 @@ func saw(e: Gunman, _by: Gunman) -> void:
 	c["seen_t"] = now()
 	if e.reloading:
 		c["reloading"] = true
-		c["reload_end"] = now() + float(Gunman.CYL - e.cylinder) * Gunman.ROUND_LOAD
+		c["reload_end"] = now() + float(e.mag_cap - e.cylinder) * e.gun_stat("load")
 	contacts[e] = c
 	if first and contacts.size() == 1 and now() > 1.0:
 		log_event("%s spots %s" % [_short(_by), e.gm_name], false)
@@ -147,8 +147,8 @@ func enemy_reloading(e: Gunman) -> void:
 	_heard(e, 1.0)
 	var c: Dictionary = contacts[e]
 	c["reloading"] = true
-	var spent := clampi(int(shots_counted.get(e, Gunman.CYL)), 1, Gunman.CYL)
-	c["reload_end"] = now() + 0.25 + float(spent) * Gunman.ROUND_LOAD
+	var spent := clampi(int(shots_counted.get(e, e.mag_cap)), 1, maxi(e.mag_cap, 1))
+	c["reload_end"] = now() + 0.25 + float(spent) * e.gun_stat("load")
 	shots_counted[e] = 0
 
 
@@ -197,7 +197,7 @@ func is_empty_est(e: Gunman) -> bool:
 	var c: Dictionary = contacts[e]
 	if c.get("reloading", false) and now() < float(c.get("reload_end", 0.0)):
 		return true
-	return int(shots_counted.get(e, 0)) >= Gunman.CYL
+	return e.has_gun() and int(shots_counted.get(e, 0)) >= e.mag_cap
 
 
 func empty_contact_near(p: Vector3, r: float) -> Gunman:

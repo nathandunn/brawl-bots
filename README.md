@@ -29,6 +29,17 @@ yours to rewrite. Part of the [Precog sim suite](https://apps.precogsoftwareserv
   decks), thinks faster and better, has steadier hands and doesn't panic. Minions are the reverse.
   1-12 fighters a side, so 3 supers against 10 minions is a match.
 
+## Weapons (pick per side, or per man)
+
+- **Colt** - six shots, 18 in all; quick, fair at any range, can fan the hammer.
+- **Shotgun** - two barrels, 14 shells; eight pellets in a cone: murder close, little past 10 m.
+- **Rifle** - eight in the tube, 18 in all; slow to work, laid carefully, reaches across the room.
+- **Colt + lasso** - rope a man 2.5-10 m off: he can't shoot until he struggles free (quicker with
+  a blade) and he's hauled in - off the balcony to his death if the roper is below.
+- **Knives (5)** - throw them (head or heart kills, anywhere else cuts and bleeds), keep the last
+  to stab with.
+- **Bottles (5)** - throw them (a skull hit knocks a man flat) or break one over a head.
+
 ## Rules of the fight
 
 - Last side standing wins. Three-second standoff. At **2:00** the side with more men standing wins

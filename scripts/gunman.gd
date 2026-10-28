@@ -54,6 +54,22 @@ var grade := "Regular"
 var gun := "colt"            # "colt" or "" (no gun)
 var melee := "fists"         # fists, katana, nunchaku, staff
 var loadout_stars := 0
+var mag_cap := CYL            # rounds the gun holds before a reload (6 Colt, 2 shotgun, 10 rifle)
+var rounds_start := TOTAL     # what "dry" is measured against
+var carry_kind := ""          # "knife" or "bottle": a man armed with throwables instead of a gun
+var carry_spare := 0          # more of them on him after the one in his hand
+var _rearm_t := 0.0
+# the lasso: thrown, it binds a man (no shooting, dragged in) until he struggles free
+var has_lasso := false
+var lasso_cd := 2.0
+var lasso_wind := -1.0
+var lasso_target: Gunman = null
+var _lasso_check := 0.0
+var roping: Gunman = null       # the man on the end of his rope
+var lassoed_by: Gunman = null   # who has him roped
+var lasso_t := 0.0              # seconds until he's struggled free
+var rope_mi: MeshInstance3D = null
+var _lasso_sure := false   # debug (--lassotest): the next throw can't miss
 var stealth := false
 ## abilities from his grade: skill, not armour
 var ab_speed := 1.0
@@ -202,15 +218,23 @@ func _ready() -> void:
 	cs.position = Vector3(0, H_STAND * 0.5, 0)
 	add_child(cs)
 	# what he carries and how good he is
-	if gun == "colt":
-		cylinder = CYL
-		spare = SPARE
+	if has_gun():
+		var gd: Dictionary = Roster.GUNS[gun]
+		mag_cap = int(gd["cap"])
+		cylinder = mag_cap
+		spare = int(gd["spare"])
+		rounds_start = cylinder + spare
 	else:
 		cylinder = loadout_stars
 		spare = 0
 	jump_cls = 0 if ab_jump < 0.25 else (1 if ab_jump < 0.8 else 2)
 	if not manager.headless:
 		_build_body()
+	if carry_kind != "":
+		has_bottle = true
+		held_kind = carry_kind
+		carry_spare = 4
+		_show_bottle(true)
 	stats = {"name": gm_name, "team": team, "preset": preset_name, "shots": 0, "hits": 0, "heads": 0, "dmg": 0.0, "kills": 0,
 		"punches": 0, "punch_hits": 0, "knockdowns": 0, "fist_kills": 0, "reloads": 0, "flips": 0, "deny_hits": 0,
 		"high_hits": 0, "taken": 0.0, "killed_by": "", "died_at": -1.0, "hp": 100.0, "alive": true, "ff": 0.0,
@@ -336,7 +360,7 @@ func _build_body() -> void:
 	fmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	fmat.albedo_color = Color(1.0, 0.85, 0.4)
 	flash_mi.material_override = fmat
-	flash_mi.position = Vector3(0, -0.94, -0.05)
+	flash_mi.position = Vector3(0, -0.94, -0.05) if gun == "colt" else Vector3(0, -1.32 if gun == "rifle" else -1.25, -0.04)
 	flash_mi.visible = false
 	arm_r.add_child(flash_mi)
 	label = Label3D.new()
@@ -361,6 +385,9 @@ func _build_weapon() -> void:
 	arm_r.add_child(weapon_root)
 	if gun == "colt":
 		_build_revolver()
+		return
+	if gun == "shotgun" or gun == "rifle":
+		_build_long_gun(gun)
 		return
 	match melee:
 		"katana":
@@ -425,6 +452,46 @@ func _build_revolver() -> void:
 	# walnut grip, raked back below the hand
 	var grip := _mesh_box(Vector3(0.03, 0.045, 0.12), Vector3(0, 0.05, 0.065), walnut, gun_mi)
 	grip.rotation.x = 0.35
+
+
+## A long gun held at the hand: barrel(s) running on along the arm, the wooden stock back along
+## the forearm to the shoulder. The off hand comes up under the fore-end when he aims (_pose).
+func _build_long_gun(kind: String) -> void:
+	var blued := _m(Color(0.16, 0.16, 0.19), 0.3)
+	var walnut := _m(Color(0.4, 0.23, 0.11), 0.7)
+	var brass := _m(Color(0.75, 0.6, 0.3), 0.35)
+	var rifle := kind == "rifle"
+	# receiver at the hand
+	gun_mi = _mesh_box(Vector3(0.045, 0.16 if rifle else 0.12, 0.06), Vector3(0, -0.66, -0.02), brass if rifle else blued, arm_r)
+	gun_mi.scale = Vector3.ONE * 1.25
+	var n := 1 if rifle else 2
+	for k in n:
+		var bm := CylinderMesh.new()
+		bm.top_radius = 0.011 if rifle else 0.016
+		bm.bottom_radius = bm.top_radius
+		bm.height = 0.5 if rifle else 0.42
+		bm.radial_segments = 10
+		var b := MeshInstance3D.new()
+		b.mesh = bm
+		b.material_override = blued
+		b.position = Vector3((0.0 if rifle else (k - 0.5) * 0.034), -0.33 if rifle else -0.29, -0.03)
+		gun_mi.add_child(b)
+	if rifle:
+		# magazine tube under the barrel, and the lever below the receiver
+		var tm := CylinderMesh.new()
+		tm.top_radius = 0.009
+		tm.bottom_radius = 0.009
+		tm.height = 0.4
+		var tube := MeshInstance3D.new()
+		tube.mesh = tm
+		tube.material_override = blued
+		tube.position = Vector3(0, -0.28, -0.005)
+		gun_mi.add_child(tube)
+		_mesh_box(Vector3(0.01, 0.1, 0.05), Vector3(0, 0.0, 0.05), blued, gun_mi)
+	# fore-end and stock (wood)
+	_mesh_box(Vector3(0.04, 0.2, 0.035), Vector3(0, -0.2, 0.0), walnut, gun_mi)
+	var stock := _mesh_box(Vector3(0.045, 0.3, 0.075), Vector3(0, 0.2, 0.03), walnut, gun_mi)
+	stock.rotation.x = -0.12
 
 
 static var _star_mat: StandardMaterial3D
@@ -520,14 +587,16 @@ func _update_label() -> void:
 	if label == null:
 		return
 	var ammo := ""
-	if gun == "colt":
+	if has_gun():
 		ammo = "dry" if total_ammo() == 0 else "%d+%d" % [cylinder, spare]
 	elif loadout_stars > 0:
 		ammo = "%d stars" % cylinder
 	if grade == "Super":
 		ammo += " *"
 	if has_bottle:
-		ammo += " +bottle"
+		ammo += " +" + (held_kind if held_kind != "" else "bottle")
+	if carry_kind != "" and carry_spare > 0:
+		ammo += " (%d more)" % carry_spare
 
 	var txt := "%s %d  %s" % [gm_name, int(ceil(hp)), ammo]
 	var wl := PackedStringArray()
@@ -560,6 +629,8 @@ func _update_label() -> void:
 		txt += " (rel)"
 	if jammed:
 		txt += " JAMMED"
+	if lassoed_by != null:
+		txt += " ROPED"
 	label.text = txt
 
 
@@ -605,7 +676,16 @@ func reach() -> float:
 
 ## A ninja with a blade or staff closes in to fight; a gunman shoots and punches when he must.
 func melee_first() -> bool:
-	return gun == "" and melee != "fists"
+	return gun == "" and (melee != "fists" or carry_kind == "knife")
+
+
+## Carrying a firearm of any kind.
+func has_gun() -> bool:
+	return Roster.GUNS.has(gun)
+
+
+func gun_stat(k: String) -> float:
+	return float(Roster.GUNS[gun][k]) if has_gun() else 1.0
 
 
 func throws_stars() -> bool:
@@ -614,7 +694,7 @@ func throws_stars() -> bool:
 
 ## Rounds or stars he started with - what "dry" means for him.
 func total_rounds() -> int:
-	return TOTAL if gun == "colt" else maxi(loadout_stars, 1)
+	return rounds_start if has_gun() else maxi(loadout_stars, 1)
 
 
 func total_ammo() -> int:
@@ -768,11 +848,19 @@ func _physics_process(delta: float) -> void:
 		return
 	# a gunman running in with rounds left pulls up short of 3 m - close enough to shoot, not
 	# so close he can't - unless he's a brawler who wants it hand to hand
-	if path_i < path.size() and gun == "colt" and cylinder > 0 and not jammed and not reloading and p("brawl") < 0.6 and stance in ["rush", "advance", "hunt"]:
+	if path_i < path.size() and has_gun() and cylinder > 0 and not jammed and not reloading and p("brawl") < 0.6 and stance in ["rush", "advance", "hunt"]:
 		var ahead := _nearest_enemy_alive(4.2)
 		if ahead != null and flat_dist(ahead.global_position) > NO_SHOOT and visible_enemies.has(ahead):
 			_stop()
-	if wrestle_t >= 0.0:
+	if lassoed_by != null and is_instance_valid(lassoed_by):
+		_dragged(delta)
+		if falling:
+			return
+	elif roping != null and is_instance_valid(roping) and flat_dist(roping.global_position) > reach() + 0.1:
+		velocity.x = 0.0
+		velocity.z = 0.0
+		move_and_slide()
+	elif wrestle_t >= 0.0:
 		velocity.x = 0.0
 		velocity.z = 0.0
 		move_and_slide()
@@ -780,6 +868,8 @@ func _physics_process(delta: float) -> void:
 			face_toward(wrestle_with.global_position, delta)
 	else:
 		_move(delta)
+	if roping != null and is_instance_valid(roping):
+		_update_rope(true)
 	_fight(delta)
 	_pose(delta)
 
@@ -829,6 +919,11 @@ func rule_value(name: String) -> Variant:
 		"arm_hit": return arms_hit() > 0
 		"pinned": return suppression > 0.75
 		"has_bottle": return has_bottle and held_kind == "bottle"
+		"has_shotgun": return gun == "shotgun"
+		"roped": return lassoed_by != null
+		"roping": return roping != null
+		"has_lasso": return has_lasso
+		"has_rifle": return gun == "rifle"
 		"holding": return has_bottle
 		"near_chair": return saloon.chair_within(global_position, 7.0) != null
 		"near_knife": return saloon.knife_within(global_position, 7.0) != null
@@ -874,7 +969,7 @@ func rule_value(name: String) -> Variant:
 		"super": return grade == "Super"
 		"minion": return grade == "Minion"
 		"melee": return melee_first()
-		"gunman": return gun == "colt"
+		"gunman": return has_gun()
 		"ninja": return family == "ninja"
 		"has_stars": return gun == "" and cylinder > 0
 		"in_reach": return _nearest_enemy_alive(reach() + 0.2) != null
@@ -993,6 +1088,36 @@ func _do_rule(r: Dictionary, o: Dictionary) -> bool:
 		"hunt":
 			_enter("hunt", tag, lock)
 			_go_to(saloon.nearest_node(brain.enemy_home()), 0.0)
+			return true
+		"lasso":
+			if not has_lasso or roping != null or lasso_wind >= 0.0 or lasso_cd > 0.0 or not manager.can_fire():
+				return false
+			var lt: Gunman = null
+			var lb := INF
+			for e in visible_enemies:
+				if not is_instance_valid(e) or not e.alive or e.lassoed_by != null or e.falling:
+					continue
+				var dd := flat_dist(e.global_position)
+				if dd < 2.5 or dd > 10.5 or not saloon.line_clear(muzzle(), e.chest()):
+					continue
+				var sc := dd
+				match String(r["arg"]):
+					"high":
+						if e.global_position.y - global_position.y < 2.0:
+							continue
+					"aiming":
+						if e.aim_target != self:
+							continue
+				if sc < lb:
+					lb = sc
+					lt = e
+			if lt == null:
+				return false
+			lasso_target = lt
+			lasso_wind = 0.6 / ab_speed
+			stats["lassos"] = int(stats.get("lassos", 0)) + 1
+			_enter("hold", tag, 1.0)
+			_stop()
 			return true
 		"grab knife":
 			if has_bottle:
@@ -1148,7 +1273,7 @@ func _decide() -> void:
 	# keen go first, then everybody; a dry man fetches something to throw on the way
 	var quiet := manager.quiet_time()
 	if quiet > 6.0 and visible_enemies.is_empty() and legs_hit() < 2 and stance != "hunt" and (quiet > 11.0 or p("aggression") + 0.5 * p("nerve") + (0.4 if bleed > 0.0 else 0.0) > 0.7):
-		if gun == "colt" and total_ammo() == 0 and not has_bottle and _go_for_bottle(12.0):
+		if has_gun() and total_ammo() == 0 and not has_bottle and _go_for_bottle(12.0):
 			return
 		var tgt := _nearest_enemy_alive(99.0)
 		if tgt == null:
@@ -1440,7 +1565,7 @@ func _choose_spot(o: Dictionary) -> void:
 		# and against guns, never across open floor: cover to cover, the smarter the safer
 		var guns := false
 		for e in brain.contacts:
-			if is_instance_valid(e) and e.alive and e.gun == "colt" and e.total_ammo() > 0:
+			if is_instance_valid(e) and e.alive and e.has_gun() and e.total_ammo() > 0:
 				guns = true
 				break
 		wa += 0.6 if guns else 1.3
@@ -1885,6 +2010,29 @@ func _fight(delta: float) -> void:
 		if punch_wind < 0.0:
 			_punch_land()
 		return
+	# --- roped: arms pinned, nothing to do but struggle
+	if lassoed_by != null:
+		aim_target = null
+		lasso_t -= delta * (1.6 if (melee_first() and melee != "fists") or (has_bottle and held_kind == "knife") else 1.0)   # a blade cuts the rope
+		if lasso_t <= 0.0 or not is_instance_valid(lassoed_by) or not lassoed_by.alive or lassoed_by.knocked_t > 0.0 or lassoed_by.roping != self:
+			_free_from_rope()
+		return
+	# --- the rope: winding up a throw, or hauling a man in
+	if lasso_wind >= 0.0:
+		lasso_wind -= delta
+		if lasso_target != null and is_instance_valid(lasso_target):
+			face_toward(lasso_target.global_position, delta, 12.0)
+		if lasso_wind < 0.0:
+			_throw_lasso()
+		return
+	if roping != null:
+		if not is_instance_valid(roping) or not roping.alive or roping.lassoed_by != self:
+			_drop_rope()
+		else:
+			face_toward(roping.global_position, delta, 10.0)
+			aim_target = null
+			if flat_dist(roping.global_position) > reach() + 0.1:
+				return   # both hands on the rope
 	# --- locked together: nobody shoots, nobody walks off
 	if wrestle_t >= 0.0:
 		aim_target = null
@@ -1951,15 +2099,15 @@ func _fight(delta: float) -> void:
 	if reloading:
 		reload_t -= delta
 		if reload_t <= 0.0:
-			if spare > 0 and cylinder < CYL:
+			if spare > 0 and cylinder < mag_cap:
 				cylinder += 1
 				spare -= 1
 				manager.sound("load", global_position + Vector3(0, 1.0, 0), 1.0, -10.0)
-			if cylinder >= CYL or spare == 0:
+			if cylinder >= mag_cap or spare == 0:
 				reloading = false
 				brain.reload_done(self)
 			else:
-				reload_t = ROUND_LOAD * reload_penalty() / ab_speed
+				reload_t = gun_stat("load") * reload_penalty() / ab_speed
 				# break off to shoot a man who has shown himself close
 				if cylinder >= 2 and _best_target() != null and flat_dist(_best_target().global_position) < 8.0 and p("aggression") > 0.4:
 					reloading = false
@@ -2001,6 +2149,9 @@ func _fight(delta: float) -> void:
 	if stance == "hide" and not ambush_ready:
 		aim_target = null
 		aim_t = 0.0
+		return
+	# --- the lasso, when a man is in rope's reach - above all one up on the balcony
+	if has_lasso and roping == null and _lasso_ready(delta):
 		return
 	# --- pick a target, aim, fire
 	var tgt := _best_target()
@@ -2068,6 +2219,8 @@ func _want_aim(tgt: Gunman) -> float:
 	t *= 1.0 + 0.5 * (1.0 - float(total_ammo()) / total_rounds()) * p("discipline")
 	if gun == "":
 		t *= 0.6   # a star is thrown, not aimed down a barrel
+	else:
+		t *= gun_stat("aim")   # a rifle is laid; a shotgun is pointed
 	# a cool head: takes his time when nobody's on him, gets it off when somebody is
 	t *= lerpf(1.0, 1.15, ab_smarts) if tgt.aim_target != self else lerpf(1.0, 0.8, ab_smarts)
 	return t
@@ -2085,7 +2238,7 @@ func _in_cover() -> bool:
 
 func _start_reload() -> void:
 	reloading = true
-	reload_t = (ROUND_LOAD + 0.25) * reload_penalty() / ab_speed   # flip the gate, punch the empties
+	reload_t = (gun_stat("load") + 0.25) * reload_penalty() / ab_speed   # flip the gate, punch the empties
 	aim_target = null
 	stats["reloads"] += 1
 	brain.heard_reload(self)
@@ -2116,7 +2269,7 @@ func _best_target() -> Gunman:
 			continue
 		if gun == "" and d > 16.0:
 			continue
-		var pd := clampf(1.25 - d / ((20.0 if gun == "colt" else 13.0) * (0.75 + 0.25 * ab_aim)), 0.15, 1.0) * expo
+		var pd := clampf(1.25 - d / ((gun_stat("range") if has_gun() else 13.0) * (0.75 + 0.25 * ab_aim)), 0.15, 1.0) * expo
 		if moving:
 			pd *= 0.55 if move_mode != "sprint" else 0.35
 		if e.is_moving():
@@ -2201,7 +2354,7 @@ func _fire(tgt: Gunman) -> void:
 	# the hammer falls - and sometimes nothing happens. Fighting with a man at arm's length,
 	# hanging on your wrist, it happens a good deal more.
 	var scuffle := (grappled_by != null and is_instance_valid(grappled_by) and manager.elapsed - grappled_t < 1.2) or flat_dist(tgt.global_position) < reach()
-	if gun == "colt" and rng.randf() < MISFIRE + (JAM_SCUFFLE if scuffle else 0.0):
+	if has_gun() and rng.randf() < (MISFIRE if gun != "shotgun" else 0.005) + (JAM_SCUFFLE if scuffle else 0.0):
 		_jam("misfire" if not scuffle else "jammed in the scuffle")
 		return
 	var sigma := BASE_SIGMA
@@ -2214,6 +2367,7 @@ func _fire(tgt: Gunman) -> void:
 	sigma *= 1.0 + suppression * 1.2
 	sigma *= gun_hand_penalty()
 	sigma /= ab_aim
+	sigma *= gun_stat("spread")
 	var shot_aim := aim_t
 	stats["fan"] = int(stats.get("fan", 0)) + (1 if fanning else 0)
 	stats["mv"] = int(stats.get("mv", 0)) + (1 if is_moving() else 0)
@@ -2225,7 +2379,13 @@ func _fire(tgt: Gunman) -> void:
 		shot_aim = 0.0
 	else:
 		sigma *= aim_spread(aim_t / (1.0 if wounds["arm_r"] == 0 else 1.7))
-	var res := manager.throw_star(self, _aim_point(tgt), sigma) if gun == "" else manager.fire_bullet(self, _aim_point(tgt), sigma)
+	var res: Dictionary
+	if gun == "":
+		res = manager.throw_star(self, _aim_point(tgt), sigma)
+	elif gun == "shotgun":
+		res = manager.fire_shotgun(self, _aim_point(tgt), sigma)
+	else:
+		res = manager.fire_bullet(self, _aim_point(tgt), sigma, gun_stat("dmg"))
 	cylinder -= 1
 	consec += 1
 	var b := 0
@@ -2240,7 +2400,7 @@ func _fire(tgt: Gunman) -> void:
 	if hit_m != null and (hit_m as Gunman).team != team:
 		stats["aimb"][b][1] += 1
 		stats["aimr"][rb * 4 + b][1] += 1
-	cock_t = (FAN if fanning else COCK + 0.1 * (1.0 - p("trigger")) + (0.25 if wounds["arm_r"] > 0 else 0.0)) / ab_speed
+	cock_t = (FAN if fanning else gun_stat("cock") + 0.1 * (1.0 - p("trigger")) + (0.25 if wounds["arm_r"] > 0 else 0.0)) / ab_speed
 	if gun == "":
 		cock_t = 0.45 / ab_speed
 	aim_t = 0.0 if fanning else aim_t * 0.4   # recoil: the sight comes back on, not all the way
@@ -2298,7 +2458,7 @@ func _punch_land() -> void:
 		return
 	var dir := flat(e.global_position - global_position).normalized()
 	# the other man's defence: he has to see it coming, and be free to act
-	if e.facing(global_position, 0.3) and e.knocked_t <= 0.0 and e.punch_wind < 0.0 and e.trav_t < 0.0 and e.stance != "cower":
+	if e.lassoed_by == null and e.facing(global_position, 0.3) and e.knocked_t <= 0.0 and e.punch_wind < 0.0 and e.trav_t < 0.0 and e.stance != "cower":
 		var dodge := 0.06 + 0.2 * e.ab_jump * clampf(e.ab_speed / 1.2, 0.6, 1.2) + 0.08 * e.p("caution")
 		if e.legs_hit() > 0:
 			dodge *= 0.3
@@ -2330,7 +2490,7 @@ func _punch_land() -> void:
 	if (e.aim_target != null or e.peek_hold > 0.0) and not e.jammed and e.total_ammo() > 0:
 		e.aim_target = null
 		e.aim_t = 0.0
-		if e.gun == "colt" and rng.randf() < PUNCH_JAM * punch_power():
+		if e.has_gun() and rng.randf() < PUNCH_JAM * punch_power():
 			stats["gun_knocks"] += 1
 			e._jam("knocked")
 	if blow == "kick":
@@ -2448,7 +2608,7 @@ func _melee_target() -> Gunman:
 		# dry, reload or jam - or get so close he can reach it first
 		var guns_on := 0
 		for o in visible_enemies:
-			if is_instance_valid(o) and o.alive and o.gun == "colt" and o.cylinder > 0 and not o.reloading and not o.jammed and o.facing(global_position, 0.5):
+			if is_instance_valid(o) and o.alive and o.has_gun() and o.cylinder > 0 and not o.reloading and not o.jammed and o.facing(global_position, 0.5):
 				guns_on += 1
 		var reach_first := 3.0 + 2.0 * ab_speed * (1.0 - 0.6 * ab_smarts) + 2.0 * p("aggression") * (1.0 - ab_smarts)
 		if guns_on > 0 and d > reach_first:
@@ -2526,7 +2686,7 @@ func _start_wrestle(e: Gunman) -> void:
 	manager.sound("thud", global_position + Vector3(0, 1.2, 0), 0.6, -6.0)
 	# a gun between two men wrestling for it goes off - or jams
 	for m in [self, e]:
-		if m.gun == "colt" and m.cylinder > 0 and not m.jammed and rng.randf() < JAM_SCUFFLE:
+		if m.has_gun() and m.cylinder > 0 and not m.jammed and rng.randf() < JAM_SCUFFLE:
 			m._jam("jammed in the wrestle")
 
 
@@ -2562,6 +2722,168 @@ func _end_wrestle() -> void:
 		e.wrestle_with = null
 
 
+# ---------------------------------------------------------------- the lasso
+
+func _lasso_ready(delta: float) -> bool:
+	lasso_cd -= delta
+	_lasso_check -= delta
+	if lasso_cd > 0.0 or _lasso_check > 0.0 or arms_hit() > 0 or stagger_t > 0.0 or not manager.can_fire():
+		return false
+	_lasso_check = 0.4
+	var best: Gunman = null
+	var bv := -INF
+	var want := 0.0
+	for e in visible_enemies:
+		if not is_instance_valid(e) or not e.alive or e.falling or e.lassoed_by != null or e.trav_t >= 0.0:
+			continue
+		var d := flat_dist(e.global_position)
+		var above := e.global_position.y - global_position.y > 2.0
+		if d < 2.5 or d > (10.5 if above else 9.0):
+			continue
+		if not saloon.line_clear(muzzle(), e.chest()):
+			continue
+		var v := -d * 0.3
+		var w := 0.08 + 0.15 * p("cunning")
+		# a man on the balcony edge above: haul him over
+		if above and not saloon.fall_edge(e.global_position, 3.2).is_empty():
+			v += 6.0
+			w = 0.9
+		if e.aim_target == self:
+			v += 1.5
+			w += 0.1
+		if e.reloading or e.jammed:
+			v += 1.0
+		if v > bv:
+			bv = v
+			best = e
+			want = w
+	if best == null or rng.randf() > want:
+		return false
+	lasso_target = best
+	lasso_wind = 0.6 / ab_speed
+	aim_target = null
+	stats["lassos"] = int(stats.get("lassos", 0)) + 1
+	manager.sound("swing", global_position + Vector3(0, 2.0, 0), 0.55, -4.0)
+	return true
+
+
+func _throw_lasso() -> void:
+	var e := lasso_target
+	lasso_target = null
+	lasso_cd = 3.0
+	if e == null or not is_instance_valid(e) or not e.alive or e.falling or e.lassoed_by != null:
+		return
+	var d := flat_dist(e.global_position.lerp(global_position, 0.0))
+	var p_hit := clampf(1.05 - d / 11.0, 0.25, 0.9) * (0.75 + 0.25 * minf(ab_aim, 2.0)) * (0.75 if e.is_moving() else 1.0) * (1.0 - 0.15 * e.ab_jump)
+	manager.sound("swing", e.global_position + Vector3(0, 1.6, 0), 0.5, -2.0)
+	if _lasso_sure:
+		_lasso_sure = false
+		p_hit = 1.0
+	if rng.randf() >= p_hit or not saloon.line_clear(muzzle(), e.chest()):
+		return
+	stats["lasso_hits"] = int(stats.get("lasso_hits", 0)) + 1
+	roping = e
+	e.lassoed_by = self
+	e.lasso_t = rng.randf_range(1.6, 3.4) * (1.25 - 0.4 * e.ab_smarts) * (1.15 - 0.3 * e.p("brawl")) * (1.0 + 0.3 * (ab_speed - 1.0))
+	e.aim_target = null
+	e.reloading = false
+	e.punch_wind = -1.0
+	e.punch_target = null
+	e.throw_wind = -1.0
+	e.grab_t = -1.0
+	e.lasso_wind = -1.0
+	if e.wrestle_t >= 0.0:
+		e._end_wrestle()
+	if e.roping != null:
+		e._drop_rope()
+	e._stop()
+	brain.log_event("%s ropes %s!" % [gm_name, e.gm_name], true)
+	manager.sound("thud", e.global_position + Vector3(0, 1.2, 0), 0.8, -4.0)
+	if e.family == "west":
+		e.say("hit")
+
+
+## Being hauled in on the rope: dragged toward the roper; if that takes him over a deck edge
+## with the roper below, over he goes.
+func _dragged(delta: float) -> void:
+	var r := lassoed_by
+	var to := flat(r.global_position - global_position)
+	var d := to.length()
+	if d > 1.15:
+		velocity.x = to.x / d * 2.6
+		velocity.z = to.z / d * 2.6
+	else:
+		velocity.x = 0.0
+		velocity.z = 0.0
+	if not is_on_floor():
+		velocity.y -= 18.0 * delta
+	if global_position.y - r.global_position.y > 2.0:
+		var e := saloon.fall_edge(global_position, 0.7, to / maxf(d, 0.01))
+		if not e.is_empty():
+			var by := r
+			_free_from_rope()
+			stats["roped_off"] = 1
+			_start_fall(e, by, "lasso", false)
+			by.stats["lasso_falls"] = int(by.stats.get("lasso_falls", 0)) + 1
+			return
+	# hauled through the balustrade if that's where the rope runs
+	var old_mask := collision_mask
+	if global_position.y - r.global_position.y > 2.0:
+		collision_mask = old_mask & ~Saloon.LAYER_SOFT
+	move_and_slide()
+	collision_mask = old_mask
+
+
+func _free_from_rope() -> void:
+	var r := lassoed_by
+	lassoed_by = null
+	lasso_t = 0.0
+	if r != null and is_instance_valid(r) and r.roping == self:
+		r.roping = null
+		r.lasso_cd = 5.0
+		r._update_rope(false)
+
+
+func _drop_rope() -> void:
+	var e := roping
+	roping = null
+	lasso_cd = 5.0
+	_update_rope(false)
+	if e != null and is_instance_valid(e) and e.lassoed_by == self:
+		e.lassoed_by = null
+		e.lasso_t = 0.0
+
+
+func _update_rope(on: bool) -> void:
+	if manager.headless:
+		return
+	if not on:
+		if rope_mi != null:
+			rope_mi.visible = false
+		return
+	if rope_mi == null:
+		rope_mi = MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.012
+		cm.bottom_radius = 0.012
+		cm.height = 1.0
+		cm.radial_segments = 6
+		rope_mi.mesh = cm
+		var m := StandardMaterial3D.new()
+		m.albedo_color = Color(0.78, 0.66, 0.42)
+		rope_mi.material_override = m
+		rope_mi.top_level = true
+		add_child(rope_mi)
+	var a := global_position + Vector3(0, 1.3, 0) + forward() * 0.3
+	var b := roping.global_position + Vector3(0, roping.height() * 0.6, 0)
+	var len := a.distance_to(b)
+	rope_mi.visible = true
+	rope_mi.global_position = (a + b) * 0.5
+	var up := (b - a) / maxf(len, 0.01)
+	var side := up.cross(Vector3.FORWARD if absf(up.dot(Vector3.FORWARD)) < 0.9 else Vector3.RIGHT).normalized()
+	rope_mi.global_transform.basis = Basis(side, up, side.cross(up)).scaled(Vector3(1, len, 1))
+
+
 # ---------------------------------------------------------------- bottles
 
 ## Bottles are for a man whose Colt is empty or jammed, a ninja out of stars - or a brawler who
@@ -2590,6 +2912,23 @@ func _bottle_step(delta: float) -> bool:
 	if grappled_by != null and is_instance_valid(grappled_by) and manager.elapsed - grappled_t < 1.0:
 		return false
 	_bottle_cd -= delta
+	# a man armed with knives or bottles draws the next one
+	if not has_bottle and carry_kind != "" and carry_spare > 0:
+		_rearm_t -= delta
+		if _rearm_t <= 0.0:
+			carry_spare -= 1
+			has_bottle = true
+			held_kind = carry_kind
+			_show_bottle(true)
+			_update_label()
+	if has_bottle and carry_kind == "knife" and held_kind == "knife" and carry_spare == 0:
+		# the last knife: keep it to stab with, unless a gun is on him
+		var on_me := false
+		for e in visible_enemies:
+			if is_instance_valid(e) and e.alive and e.aim_target == self:
+				on_me = true
+		if not on_me:
+			return false
 	if has_bottle:
 		# he picked it up to throw it - unless he's about to squeeze off an aimed shot
 		if aim_target != null and aim_t > 0.25 and not _bottle_time():
@@ -2619,7 +2958,7 @@ func _bottle_step(delta: float) -> bool:
 
 ## No better way to hurt anybody from here: gun dry or jammed, out of stars.
 func _bottle_time() -> bool:
-	if gun == "colt":
+	if has_gun():
 		return (total_ammo() == 0 and not reloading) or jammed
 	if loadout_stars > 0:
 		return cylinder == 0 and _melee_target() == null
@@ -2664,11 +3003,13 @@ func _throw_bottle() -> void:
 	stats["bottles"] += 1
 	var kind := held_kind
 	held_kind = ""
+	_rearm_t = 0.55 / ab_speed
 	if kind == "chair":
 		stats["chairs"] = int(stats.get("chairs", 0)) + 1
 	if kind == "knife":
 		stats["knives"] = int(stats.get("knives", 0)) + 1
-	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * (0.86 if kind == "bottle" else (0.7 if kind == "knife" else 0.6)), 0), sigma * (1.3 if kind == "chair" else (0.8 if kind == "knife" else 1.0)), kind)
+	var practised := 0.7 if carry_kind == kind else 1.0   # a man who came armed with them throws them well
+	manager.throw_bottle(self, t.global_position + Vector3(0, t.height() * (0.86 if kind == "bottle" else (0.7 if kind == "knife" else 0.6)), 0), sigma * practised * (1.3 if kind == "chair" else (0.8 if kind == "knife" else 1.0)), kind)
 
 
 ## Off a table or the bar within `r`, while there's nobody right on him: go and get it.
@@ -2752,7 +3093,7 @@ func _drop_bottle() -> void:
 func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 	if falling or trav_t >= 0.0 or global_position.y < 1.2:
 		return false
-	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw", "chair", "knife"]
+	var shove := how in ["fists", "blunt", "blade", "bottle", "kick", "throw", "chair", "knife", "lasso"]
 	var toward := flat(dir).normalized() if shove and flat(dir).length() > 0.01 else Vector3.ZERO
 	# a dying man staggers a step or two before he goes; a blow drives a man back a good stride
 	var e := saloon.fall_edge(global_position, 1.5 if fatal else (1.6 if shove else 0.9), toward)
@@ -2781,6 +3122,8 @@ func _maybe_fall(how: String, by: Gunman, dir: Vector3, fatal: bool) -> bool:
 func _start_fall(e: Dictionary, by: Gunman, how: String, fatal: bool) -> void:
 	if wrestle_t >= 0.0:
 		_end_wrestle()
+	if roping != null:
+		_drop_rope()
 	falling = true
 	fall_dead = fatal
 	fall_by = by
@@ -2855,7 +3198,7 @@ func _land_fall() -> void:
 	if fall_dead or drop >= 3.0:
 		if not fall_dead:
 			stats["death_part"] = "fall"
-			stats["death_how"] = "fall"
+			stats["death_how"] = "lasso" if fall_how == "lasso" else "fall"
 			if by != null and by.team != team:
 				by.stats["fall_kills"] += 1
 		stats["fell"] = true
@@ -2988,6 +3331,9 @@ func _wound_visual(part: String) -> void:
 func knock_down(t: float) -> void:
 	if wrestle_t >= 0.0:
 		_end_wrestle()
+	if roping != null:
+		_drop_rope()
+	lasso_wind = -1.0
 	blow = ""
 	punch_wind = -1.0
 	knocked_t = t
@@ -3017,6 +3363,10 @@ func _hurt_flash() -> void:
 func _die(by: Gunman, how: String, dir: Vector3) -> void:
 	if wrestle_t >= 0.0:
 		_end_wrestle()
+	if roping != null:
+		_drop_rope()
+	if lassoed_by != null:
+		_free_from_rope()
 	alive = false
 	stats["alive"] = false
 	stats["hp"] = 0.0
@@ -3139,6 +3489,8 @@ func _pose(delta: float) -> void:
 		target_rx = 1.2   # fists up
 	gun_arm.rotation.x = lerpf(gun_arm.rotation.x, target_rx, clampf(delta * 14.0, 0, 1))
 	var off_rx := 0.9 if reloading else (1.2 if stance == "brawl" else swing * 0.6)
+	if (gun == "shotgun" or gun == "rifle") and (aiming or reloading):
+		off_rx = gun_arm.rotation.x   # both hands on a long gun
 	off_arm.rotation.x = lerpf(off_arm.rotation.x, off_rx, clampf(delta * 10.0, 0, 1))
 	# a shot arm that isn't holding the gun just hangs
 	for side in [["arm_l", arm_l], ["arm_r", arm_r]]:
@@ -3168,6 +3520,14 @@ func _pose(delta: float) -> void:
 		var ku := 1.0 - clampf(punch_wind / maxf(0.36 / ab_speed, 0.05), 0.0, 1.0)
 		leg_r.rotation.x = lerpf(0.2, 1.5, ku)
 		gun_arm.rotation.x = lerpf(gun_arm.rotation.x, 0.6, clampf(delta * 10.0, 0, 1))
+	# roped: arms pinned to his sides
+	if lassoed_by != null:
+		arm_l.rotation = Vector3(0.05, 0, 0.08)
+		arm_r.rotation = Vector3(0.05, 0, -0.08)
+		body_root.rotation.x = lerpf(body_root.rotation.x, -0.2, clampf(delta * 6.0, 0, 1))
+	elif roping != null or lasso_wind >= 0.0:
+		arm_r.rotation.x = 2.6 if lasso_wind >= 0.0 else 1.2
+		arm_l.rotation.x = 1.1
 	# locked together: leaning in, both arms round him
 	if wrestle_t >= 0.0:
 		body_root.rotation.x = lerpf(body_root.rotation.x, -0.35, clampf(delta * 10.0, 0, 1))
@@ -3208,7 +3568,7 @@ func _celebrate(delta: float) -> void:
 	var prev_t := fmod(t - delta + _celebrate_phase, 1.6)
 	var shoot := beat_t < 0.6
 	arm_r.rotation.x = lerpf(arm_r.rotation.x, 3.0 if shoot or gun == "" else 2.6, clampf(delta * 8.0, 0, 1))
-	if gun == "colt" and prev_t < 0.3 and beat_t >= 0.3:
+	if has_gun() and prev_t < 0.3 and beat_t >= 0.3:
 		_flash()
 		manager.sound("shot", global_position + Vector3(0, 2.2, 0), rng.randf_range(0.95, 1.08), -4.0)
 	if prev_t < 0.95 and beat_t >= 0.95:

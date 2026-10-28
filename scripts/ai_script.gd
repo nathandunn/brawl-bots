@@ -56,6 +56,11 @@ const BOOLS := {
 	"near_chair": "a chair within 7 m",
 	"near_knife": "a knife lying within 7 m",
 	"has_knife": "he has a knife in his hand",
+	"has_shotgun": "he carries the shotgun",
+	"has_lasso": "he carries a lasso",
+	"roped": "he is caught in a lasso (can't shoot)",
+	"roping": "he has a man on the end of his rope",
+	"has_rifle": "he carries the rifle",
 	"wrestling": "he is locked in a wrestle",
 }
 const NUMS := {
@@ -88,6 +93,7 @@ const ACTIONS := {
 	"grab bottle": "go and get the nearest bottle within 7 m (then throw it)",
 	"grab chair": "go and pick up the nearest chair within 7 m (then throw it)",
 	"grab knife": "go and pick up the nearest knife within 7 m (throw it, or use it close)",
+	"lasso": "rope a man 2.5-10 m off: lasso nearest | high (one up on the balcony) | aiming",
 	"default": "whatever the built-in brain would do",
 }
 const RUSH_TARGETS: Array[String] = ["nearest", "weakest", "reloading", "high", "aiming", "melee"]
@@ -102,6 +108,7 @@ const EXAMPLES := [
 	["Out of rounds: find a bottle", "when dry and not has_bottle and near_bottle -> grab bottle"],
 	["Too close to shoot: grab a chair", "when close and not holding and near_chair -> grab chair"],
 	["Knife first when it's close", "when close and not holding and near_knife -> grab knife"],
+	["Rope them off the balcony", "when has_lasso and enemy_high -> lasso high"],
 	["Get up top early", "when not high and time > 90 -> take high"],
 	["Off the rail when they're close", "when edge and nearest < 4 -> fall back"],
 	["Supers break a stalemate", "when super and stalemate -> flank"],
@@ -231,6 +238,13 @@ static func _parse_action(t: String) -> Dictionary:
 			return {"error": "'for' wants seconds, e.g. hide for 2"}
 		lock = clampf(float(secs), 0.0, 20.0)
 		t = t.substr(0, fi).strip_edges()
+	if t.begins_with("lasso"):
+		var la := t.substr(5).strip_edges()
+		if la == "":
+			la = "nearest"
+		if not ["nearest", "high", "aiming"].has(la):
+			return {"error": "lasso whom? nearest, high or aiming"}
+		return {"action": "lasso", "arg": la, "lock": lock}
 	if t.begins_with("rush"):
 		var arg := t.substr(4).strip_edges()
 		if arg == "":
